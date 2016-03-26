@@ -1,11 +1,11 @@
-902b7fc5bcdf825a9cd2795a0bfc6196 *DESCRIPTION
+ecba0f47d0eaeee8ad1f05f40e95bf39 *DESCRIPTION
 8b34c9210fc2477ffd11d0d1219f28ed *NAMESPACE
-9b4a512a7011f0bbecb5706ce8e37bc3 *R/dagitty.r
+7845fe8cfcfa094344794233b5d980f1 *R/dagitty.r
 f7845d7e4ea5b37dd126e669761e574d *R/internal.r
 5ca926601ace5dec79e42a72c25935ee *build/vignette.rds
 b14d4a8781edda0caff075a1931a739e *inst/doc/dagitty4semusers.R
 0c58d5bee9e794f8e0f5c2725e908586 *inst/doc/dagitty4semusers.Rmd
-a3bd000dccb199ce41880a6b590c5120 *inst/doc/dagitty4semusers.html
+beec0735ef1fc2a0c5479f253909fb9f *inst/doc/dagitty4semusers.html
 cc17911c40676615ac1cd1a5c8b369a9 *inst/js/RUtil.js
 d8a103065e95fa785743e51524b46712 *inst/js/dagitty-alg.js
 95d8560ec1432668efbadf40b8835188 *inst/js/example-dags.js
@@ -18,7 +18,7 @@ c94784c50d5e604462536982b83364e3 *man/adjustmentSets.Rd
 72b36e0915d5dd554dedd3f34ce5c0ae *man/backDoorGraph.Rd
 d5cc0f0fd452c7d5bd2e80558caff793 *man/canonicalize.Rd
 752ac67decb09051c7872ae4f85f372a *man/coordinates.Rd
-757c9678e4110d886b6b21bb480baeb4 *man/dagitty.Rd
+71a2c0ef35c794ac8d19b23a01025334 *man/dagitty.Rd
 5508a455c134c4912828e58fa29c4b83 *man/dconnected.Rd
 4d8746b4e8d512fdf1bbfc419d0599d7 *man/downloadGraph.Rd
 4f00f6783b753740b4c73e40c61576e1 *man/edges.Rd
@@ -32,7 +32,7 @@ f0559a06f52ea76dc659d3e2e4b29015 *man/isAdjustmentSet.Rd
 f321b1c849d527d3631b1cfd826a0345 *man/lavaanToGraph.Rd
 653bfd96a7a78b7346ede1b22b5557e8 *man/localTests.Rd
 be4db54b5c78296228ad22b0f4f67eaf *man/moralize.Rd
-3cdbaafce9090e103fd84127d6fcf9cd *man/names.dagitty.Rd
+7704028a89c69d4fdfe0fe448a0ce3dd *man/names.dagitty.Rd
 b9e2af8bb95f8d1c508f89aa2a05e69d *man/orientPDAG.Rd
 3e7e465f679da5fceecbff428743516e *man/paths.Rd
 23a3621f63b96a8053b23f8f29019f4a *man/plot.dagitty.Rd
