@@ -4,7 +4,7 @@
 #' @importFrom grDevices dev.size
 #' @importFrom methods is
 #' @importFrom utils tail
-#' @importFrom stats as.formula coef confint cov lm pnorm qnorm quantile runif
+#' @importFrom stats as.formula coef confint cov cor lm pnorm qnorm quantile runif loess sd
 #' @importFrom graphics abline arrows axis lines par plot plot.new segments strheight strwidth text xspline
 NULL
 
@@ -24,6 +24,20 @@ graphType <- function( x ){
 		.jsassign( xv, .jsp("global.",
 			xv,".getType()") )
 		r <- .jsget( xv )
+	}, 
+	error=function(e) stop(e),
+	finally={.deleteJSVar(xv)})
+	r
+}
+'graphType<-' <- function( x, value=c("dag","mag","pdag","pag") ){
+	value <- match.arg(value)
+	x <- as.dagitty( x )
+	xv <- .getJSVar()
+	r <- NULL
+	tryCatch({
+		.jsassigngraph( xv, x )
+		.jseval( paste0("global.",xv,".setType('",value,"')") )
+		r <- .jsgetgraph( xv )
 	}, 
 	error=function(e) stop(e),
 	finally={.deleteJSVar(xv)})
@@ -95,14 +109,16 @@ getExample <- function( x ){
 #' Simulate Data from Structural Equation Model
 #'
 #' Interprets the input graph as a structural equation model, generates random path 
-#' coefficients, and simulates data from the model. This is just a dumb frontend to 
-#' lavaan's \code{\link[lavaan]{simulateData}} function and probably not very useful 
+#' coefficients, and simulates data from the model. This is a very bare-bones 
+#' function and probably not very useful 
 #' except for quick validation purposes (e.g. checking that an implied vanishing 
 #' tetrad truly vanishes in simulated data). For more elaborate simulation studies, please
 #' use the lavaan package or similar facilities in other packages.
 #'
 #' @details Data are generated in the following manner. 
-#' Each directed arrow is assigned a path coefficient chosen uniformly
+#' Each directed arrow is assigned a path coefficient that can be given using the attribute
+#' "beta" in the model syntax (see the examples). All coefficients not set in this manner are
+#' set to the \code{b.default} argument, or if that is not given, are chosen uniformly
 #' at random from the interval given by \code{b.lower} and \code{b.upper} (inclusive; set
 #' both parameters to the same value for constant path coefficients). Each bidirected 
 #' arrow a <-> b is replaced by a substructure  a <- L -> b, where L is an exogenous latent
@@ -113,8 +129,10 @@ getExample <- function( x ){
 #' 
 #' @param x the input graph, a DAG (which may contain bidirected edges).
 #' @param N number of samples to generate.
-#' @param b.lower lower bound for path coefficients.
+#' @param b.lower lower bound for random path coefficients, applied if \code{b.default=NULL}.
 #' @param b.upper upper bound for path coefficients.
+#' @param b.default default path coefficient applied to arrows for which no coefficient is 
+#'  defined in the model syntax.
 #' @param eps residual variance (only meaningful if \code{standardized=FALSE}).
 #' @param standardized whether a standardized output is desired (all variables have variance 1).
 #'
@@ -123,61 +141,77 @@ getExample <- function( x ){
 #' For instance, the graph structure z <- x -> y -> z is incompatible with standardized
 #' coefficients of 0.9, since this would imply that the variance of z must be larger than
 #' 1. For large graphs with many parallel paths, it can be very difficult to find coefficients 
-#' that work. 
+#' that work.
 #' 
 #' @return Returns a data frame containing \code{N} values for each variable in \code{x}.
 #' 
 #' @examples
 #' ## Simulate data with pre-defined path coefficients of -.6
-#' g <- dagitty('dag{z -> x <- y}')
-#' x <- simulateSEM( g, .707, .707 ) # sqrt(2)/2 is largest possible
+#' g <- dagitty('dag{z -> x [beta=-.6] x <- y [beta=-.6] }')
+#' x <- simulateSEM( g ) 
 #' cov(x)
 #'
 #' 
 #' @export
-simulateSEM <- function( x, b.lower=-.6, b.upper=.6, eps=1, N=500, standardized=TRUE ){
+simulateSEM <- function( x, b.default=NULL, b.lower=-.6, b.upper=.6, eps=1, N=500, standardized=TRUE ){
 	if( !requireNamespace( "MASS", quietly=TRUE ) ){
 		stop("This function requires the 'MASS' package!")
 	}
 	.supportsTypes( x, c("dag") )
 	x <- as.dagitty( x )
-	xc <- canonicalize( x )
-	x <- xc$g
-	vars <- names( x )
-	e <- edges( x )
+	e <- .edgeAttributes( x, "beta" )
+	e$a <- as.double(as.character(e$a))
+	b.not.set <- is.na(e$a)
+	if( is.null( b.default ) ){
+		e$a[b.not.set] <- runif(sum(b.not.set),b.lower,b.upper)
+	} else {
+		e$a[b.not.set] <- b.default
+	}
+	ovars <- names(x)
+	nV <- length(ovars)
+	nL <- sum(e$e=="<->")
 	if( nrow(e) > 0 ){
-		Beta <- matrix( 0, nrow=length(vars), ncol=length(vars) )
-		rownames(Beta) <- colnames(Beta) <- vars
-		ecovs <- runif( length(xc$L), b.lower, b.upper )
-		names(ecovs) <- xc$L
-		e[,1] <- as.character(e[,1])
-		e[,2] <- as.character(e[,2])
-		for( i in seq_len( nrow( e ) ) ){
-			if( e[i,1] %in% xc$L ){
-				Beta[(e[i,1]),(e[i,2])] <- sqrt(abs(ecovs[e[i,1]]))
-				if( ecovs[e[i,1]] < 0 ){
-					Beta[(e[i,1]),(e[i,2])] <- - Beta[(e[i,1]),(e[i,2])]
-					ecovs[e[i,1]] <- -ecovs[e[i,1]]
+		vars <- paste0("v",ovars)
+		if( nL > 0 ){
+			lats <- paste0("l",seq_len(nL))
+		} else {
+			lats <- c()
+		}
+		Beta <- matrix( 0, nrow=nV+nL, ncol=nV+nL )
+		rownames(Beta) <- colnames(Beta) <- c(vars,lats)
+		cL <- 1
+		for( i in seq_len( nrow(e) ) ){
+			b <- e$a[i]
+			if( e$e[i] == "<->" ){
+				lV <- paste0("l",cL) 
+				lb <- sqrt(abs(b))
+				Beta[lV,paste0("v",e$v[i])] <- lb
+				if( b < 0 ){
+					Beta[lV,paste0("v",e$w[i])] <- -lb
+				} else {
+					Beta[lV,paste0("v",e$w[i])] <- lb
 				}
-			} else {
-				Beta[(e[i,1]),(e[i,2])] <- runif(1,b.lower,b.upper)			
+				cL <- cL + 1
+			} else if( e$e[i] == "->" ){
+				Beta[paste0("v",e$v[i]),paste0("v",e$w[i])] <- b
 			}
 		}
-		L <- (diag( 1, length(vars) ) - Beta)
+		L <- (diag( 1, nV+nL ) - Beta)
 		Li <- MASS::ginv( L )
 		if( standardized == TRUE ){
-			Phi <- MASS::ginv( t(Li)^2 ) %*% rep(1,nrow(Beta))
-			Phi <- diag( c(Phi), length(vars) )
+			Phi <- MASS::ginv( t(Li)^2 ) %*% rep(eps,nrow(Beta))
+			Phi <- diag( c(Phi), nV+nL )
 		} else {
-			Phi <- diag( eps, length(vars) )
+			Phi <- diag( eps, nV+nL )
 		}
 		Sigma <- t(Li) %*% Phi %*% Li
 	} else {
-		Sigma <- diag(1,length(vars))
+		Sigma <- diag(1,nV+nL)
 	}
-	r <- MASS::mvrnorm( N, rep(0,length(vars)), Sigma )
-	colnames(r) <- vars
-	as.data.frame(r[,setdiff(vars,xc$L)])
+	r <- MASS::mvrnorm( N, rep(0,nV+nL), Sigma )[,1:nV]
+	colnames(r) <- ovars
+	r <- as.data.frame(r)
+	r[,setdiff(ovars,latents(x))]
 }
 
 #' Ancestral Relations
@@ -566,6 +600,19 @@ names.dagitty <- function( x ){
 	r
 }
 
+#' Retrieve Exogenous Variables 
+#'
+#' Returns the names of all variables that have no directed arrow pointing to them.
+#' Note that this does not preclude variables connected to bidirected arrows.
+#' 
+#' @param x the input graph, of any type.
+#' @export
+exogenousVariables <- function( x ){
+	x <- as.dagitty( x )
+	e <- edges( x )
+	setdiff( names(x), as.character( e$w[e$e=="->"] ) )
+}
+
 #' Plot Coordinates of Variables in Graph
 #'
 #' The DAGitty syntax allows specification of plot coordinates for each variable in a 
@@ -771,9 +818,13 @@ plot.dagitty <- function( x, ... ){
 	x <- as.dagitty( x )
 	.supportsTypes(x,c("dag","mag","pdag"))
 	coords <- coordinates( x )
+        if( any( !is.finite( coords$x ) | !is.finite( coords$y ) ) ){
+                stop("Please supply plot coordinates for graph! See ?coordinates and ?graphLayout.")
+        }
 	labels <- names(coords$x)
+	par(mar=rep(0,4))
 	plot.new()
-	par(new=TRUE,mar=rep(0,4))
+	par(new=TRUE)
 	wx <- sapply( paste0("mm",labels), 
 		function(s) strwidth(s,units="inches") )
 	wy <- sapply( paste0("\n",labels), 
@@ -841,8 +892,9 @@ plot.dagitty <- function( x, ... ){
 		ax2[undirected], -ay2[undirected], col="black", lwd=2 )
 	for( i in which( has.control.point ) ){
 		.arc( ax1[i], -ay1[i], 
-			ax2[i], -ay2[i], axc[i], -ayc[i], col="gray", 
-			code=acode[i], length=0.1 )
+			ax2[i], -ay2[i], axc[i], -ayc[i], 
+			col="gray", 
+			code=acode[i], length=0.1, lwd=2 )
 	}
 	text( coords$x, -coords$y[labels], labels )
 }
@@ -935,7 +987,7 @@ adjustmentSets <- function( x, exposure=NULL, outcome=NULL,
 			r <- structure( .jsget(xv), class="dagitty.sets" )
 		},finally={.deleteJSVar(xv)})
 	} else if( type == "all" ){
-		covariates <- setdiff( names( x ), c( exposure, outcome ) )
+		covariates <- setdiff( names( x ), c( exposures(x), outcomes(x) ) )
 		subsets <- (expand.grid( rep( list(0:1),length(covariates)) ))
 		r <- lapply( 1:nrow(subsets), function(i){
 			Z <- covariates[as.logical(subsets[i,])]
@@ -1040,7 +1092,7 @@ isAdjustmentSet <- function( x, Z, exposure=NULL, outcome=NULL ){
 #' latents( g ) <- c("m")
 #' impliedConditionalIndependencies( g ) # none
 #' @export
-impliedConditionalIndependencies <- function( x, type="missing.edge", max.results=100 ){
+impliedConditionalIndependencies <- function( x, type="missing.edge", max.results=Inf ){
 	if( ! type %in% c("missing.edge","basis.set") ){
 		stop("'type' must be one of: missing.edge, basis.set")
 	}
@@ -1431,12 +1483,18 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #' the given dataset.
 #'
 #' @param x the input graph, a DAG, MAG, or PDAG.
+#' @param tests optional list of the precise tests to perform. If not given, the list
+#'  of tests is automatically derived from the input graph. Can be used to restrict 
+#'  testing to only a certain subset of tests (for instance, to test only those conditional
+#'  independencies for which the conditioning set is of a reasonably low dimension, such
+#'  as shown in the example). 
 #' @param data matrix or data frame containing the data.
 #' @param sample.cov the sample covariance matrix; ignored if \code{data} is supplied.
 #' Either \code{data} or \code{sample.cov} and \code{sample.nobs} must be supplied.
 #' @param sample.nobs number of observations; ignored if \code{data} is supplied.
 #' @param type character indicating which kind of local
-#'  test to perform. Supported values are \code{"cis"} (conditional independencies),
+#'  test to perform. Supported values are \code{"cis"} (linear conditional independence),
+#'  \code{"cis.loess"} (conditional independence using loess regression), 
 #'  \code{"tetrads"} and \code{"tetrads.type"}, where "type" is one of the items of the 
 #'  tetrad typology, e.g. \code{"tetrads.within"} (see \code{\link{vanishingTetrads}}).
 #'  Tetrad testing is only implemented for DAGs.
@@ -1446,29 +1504,41 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #'   large samples even if the data are normally distributed.
 #' @param conf.level determines the size of confidence intervals for test
 #'   statistics.
+#' @param loess.pars list of parameter to be passed on to  \code{\link[stats]{loess}}
+#'   (for \code{type="cis.loess"}), for example the smoothing range.
 #'
 #' @details Tetrad implications can only be derived if a Gaussian model (i.e., a linear
 #' structural equation model) is postulated. Conditional independence implications (CI)
 #' do not require this assumption. However, both Tetrad and CI implications are tested
 #' parametrically: for Tetrads, Wishart's confidence interval formula is used, whereas
 #' for CIs, a Z test of zero conditional covariance (if the covariance
-#' matrix is given) or a test of regressional independence (it the raw data is given)
-#' is performed.
-#' Tetrad tests also support bootstrapping instead of estimating parametric confidence
-#' intervals.
+#' matrix is given) or a test of residual independence after linear regression
+#' (it the raw data is given) is performed.
+#' Both tetrad and CI tests also support bootstrapping instead of estimating parametric
+#' confidence intervals.
 #' 
 #' @examples
 #' # Simulate full mediation model with measurement error of M1
+#' set.seed(123)
 #' d <- simulateSEM("dag{X->{U1 M2}->Y U1->M1}",.6,.6)
 #' 
 #' # Postulate and test full mediation model without measurement error
 #' plotLocalTestResults(localTests( "dag{ X -> {M1 M2} -> Y }", d, "cis" ))
 #'
+#' # Simulate data from example SEM
+#' g <- getExample("Polzer")
+#' d <- simulateSEM(g,.1,.1)
+#' 
+#' # Compute independencies with at most 3 conditioning variables
+#' imp <- Filter(function(x) length(x$Z)<4, impliedConditionalIndependencies(g))
+#' plotLocalTestResults(localTests( g, d, "cis.loess", R=100, tests=imp, loess.pars=list(span=0.6) ))
+#'
 #' @export
 localTests <- function(x, data=NULL, 
-	type=c("cis","tetrads","tetrads.within","tetrads.between","tetrads.epistemic"),
+	type=c("cis","cis.loess","tetrads","tetrads.within","tetrads.between","tetrads.epistemic"),
+	tests=NULL,
 	sample.cov=NULL,sample.nobs=NULL,
-	conf.level=.95,R=NULL){
+	conf.level=.95,R=NULL,loess.pars=NULL){
 	x <- as.dagitty(x)
 	type <- match.arg(type)
 	if( type=="cis" ){
@@ -1482,13 +1552,22 @@ localTests <- function(x, data=NULL,
 	if( !is.null(R) && is.null(data) ){
 		stop("Bootstrapping requires raw data!")
 	}
+	if( is.null(R) && type=="cis.loess" ){
+		stop("Non-parametric conditional independence testing requires bootstrapping! Please provide R argument.")
+	}
 	if( is.null(data) && is.null(sample.cov) ){
 		stop("Please provide either data or sample covariance matrix!")
 	}
 	w <- (1-conf.level)/2
 	if( type %in% c("tetrads","tetrads.within","tetrads.between","tetrads.epistemic") ){
-		tets <- vanishingTetrads( x, strsplit(type,"\\.")[[1]][2] )
-		if( length(tets) == 0 ){
+		if( is.null( tests ) ){
+			if( type == "tetrads" ){
+				tests <- vanishingTetrads( x )
+			} else {
+				tests <- vanishingTetrads( x, strsplit(type,"\\.")[[1]][2] )
+			}
+		}
+		if( length(tests) == 0 ){
 			return(data.frame())
 		}
 		if( is.null( sample.cov ) ){
@@ -1497,55 +1576,70 @@ localTests <- function(x, data=NULL,
 		if( is.null( sample.nobs ) ){
 			sample.nobs <- nrow(data)
 		}
-		tetrad.values <- .tetradsFromCov(sample.cov,tets)
-		tetrad.sample.sds <- sapply(seq_len(nrow(tets)),
-			function(i) .tetrad.sem(tets[i,],sample.cov,sample.nobs))
+		tetrad.values <- .tetradsFromCov(sample.cov,tests)
+		tetrad.sample.sds <- sapply(seq_len(nrow(tests)),
+			function(i) .tetrad.sem(tests[i,],sample.cov,sample.nobs))
 		r <- data.frame(
-				row.names=apply( tets, 1, 
+				row.names=apply( tests, 1, 
 					function(x) paste(x,collapse=",") ),
-				estimate=tetrad.values,
-				std.error=tetrad.sample.sds,
-				p.value=2*pnorm(abs(tetrad.values/tetrad.sample.sds),
-					lower.tail=FALSE)
+				estimate=tetrad.values
 		)
 		if( !is.null(R) ){
 			requireNamespace("boot",quietly=TRUE)
 			bo <- boot::boot( data,
-				function(data,i) .tetradsFromData(data,tets,i), R )
+				function(data,i) .tetradsFromData(data,tests,i), R )
 			r <- cbind( r, t(apply( bo$t, 2,
-				function(x) quantile(x,c((1-conf.level)/2,1-(1-conf.level)/2)) )) )
+				function(x) c(sd(x), quantile(x,c((1-conf.level)/2,1-(1-conf.level)/2))) )) )
+			colnames(r) <- c("estimate","std.error",
+				paste0(100*w,"%"),paste0(100*(1-w),"%"))
 		} else {
-			conf <- cbind( tetrad.values+qnorm(w)*tetrad.sample.sds,
+			std.errors <- tetrad.sample.sds
+			p.values <- 2*pnorm(abs(tetrad.values/tetrad.sample.sds),
+				lower.tail=FALSE)
+			conf <- cbind( std.errors, p.values, tetrad.values+qnorm(w)*tetrad.sample.sds,
 				tetrad.values+qnorm(1-w)*tetrad.sample.sds )
-				colnames(conf) <- c(paste0(100*w,"%"),paste0(100*(1-w),"%"))
 			r <- cbind( r, conf )
+			colnames(r) <- c("estimate","std.error","p.value",
+				paste0(100*w,"%"),paste0(100*(1-w),"%"))
 		}
-	} else if( type == "cis" ){
-		if( !is.null(R) ){
-			stop("Bootstrapping for conditional independence is not yet implemented.")
+	} else if( type %in% c("cis","cis.loess") ){
+		if( is.null(tests) ){
+			tests <- impliedConditionalIndependencies( x )
 		}
-		cis <- impliedConditionalIndependencies( x )
-		if( length(cis) == 0 ){
+		if( length(tests) == 0 ){
 			return(data.frame())
 		}
-		if( !is.null(data) ){
+		row.names <- sapply(tests,as.character)
+		if( !is.null(R) ){
+			if( type == "cis" ){
+				f <- function(i) .ci.test.lm.perm(data,i,conf.level,R)
+			} else {
+				f <- function(i) .ci.test.loess.perm(data,i,conf.level,R,loess.pars)
+			}
 			r <- as.data.frame(
-				row.names=sapply(cis,as.character),
-				t(sapply( cis, function(i) 
-					.ri.test(data,i,conf.level) ))
+				row.names=row.names,
+				t(sapply( tests, f ))
 			)
+			colnames(r) <- c("estimate","std.error",
+				paste0(100*w,"%"),paste0(100*(1-w),"%"))
 		} else {
-			r <- as.data.frame(
-				row.names=sapply(cis,as.character),
-				t(sapply( cis, function(i) 
-					.ci.test.covmat(sample.cov,sample.nobs,i,conf.level) ))
-			)
+			if( !is.null(data) ){
+				r <- as.data.frame(
+					row.names=row.names,
+					t(sapply( tests, function(i) 
+						.ri.test(data,i,conf.level) ))
+				)
+			} else {
+				r <- as.data.frame(
+					row.names=row.names,
+					t(sapply( tests, function(i) 
+						.ci.test.covmat(sample.cov,sample.nobs,i,conf.level) ))
+				)
+			}
+			colnames(r) <- c("estimate","std.error","p.value",
+				paste0(100*w,"%"),paste0(100*(1-w),"%"))
 		}
-	} else {
-		stop("Local test type '",type,"' not supported!")
 	}
-	colnames(r) <- c("estimate","std.error","p.value",
-		paste0(100*w,"%"),paste0(100*(1-w),"%"))
 	return(r)
 }
 
@@ -1559,6 +1653,12 @@ localTests <- function(x, data=NULL,
 #' \link{localTests}. 
 #' @param xlab X axis label.
 #' @param xlim numerical vector with 2 elements; range of X axis.
+#' @param axis.pars arguments to be passed on to \code{\link{axis}}
+#'  when generating the Y axis for the plot.
+#' @param sort.by.statistic logical. Sort the rows of \code{x} by
+#'  the absolute value of the test statistic before plotting.
+#' @param n plot only the n tests for which the absolute value of 
+#'  the test statistics diverges most from 0.
 #' @param ... further arguments to be passed on to \code{\link{plot}}.
 #'
 #' @examples
@@ -1568,11 +1668,16 @@ localTests <- function(x, data=NULL,
 #'
 #' @export
 plotLocalTestResults <- function(x,xlab="test statistic (95% CI)",
-	xlim=c(min(x[,c(4,5)]),max(x[,c(4,5)])),...){
+	xlim=range(x[,c(ncol(x)-1,ncol(x))]),sort.by.statistic=TRUE,
+	n=Inf,axis.pars=list(las=1),...){
+	x <- x[order(abs(x[1]),decreasing=TRUE),]
+	if( is.finite(n) && n > 0 && n < nrow(x) ){
+		x <- x[1:n,]
+	}
 	y <- seq_len(nrow(x))
 	plot( x[,1], y,xlab=xlab,xlim=xlim, yaxt="n", ylab="", ... )
-	axis( 2, at=y, labels=rownames(x), las=1 )
-	segments( x[,4], y, x[,5], y )
+	do.call( axis, c( list( 2, at=y, labels=rownames(x)), axis.pars ) )
+	segments( x[,ncol(x)-1], y, x[,ncol(x)], y )
 	#segments( seq_len(nrow(x))+.1, x[,1]-2*x[,2], 
 	#	y1=x[,1]+2*x[,2], col=2 )
 	abline( v=0 )

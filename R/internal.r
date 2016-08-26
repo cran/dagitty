@@ -18,17 +18,19 @@
 	}
 }
 
-.arc <- function( x1, y1, x2, y2, xm, ym, col="gray", length=0.1, code=3 ){
+.arc <- function( x1, y1, x2, y2, xm, ym, col="gray", length=0.1, code=3, lwd=1 ){
 	x <- c(x1,xm,x2)
 	y <- c(y1,ym,y2)
 	res <- xspline(x, y, 1, draw=FALSE)
 	lines(res, col=col)
 	nr <- length(res$x)
 	if( code >= 3 ){
-		arrows(res$x[1], res$y[1], res$x[4], res$y[4], col=col, code = 1, length = length)
+		arrows(res$x[1], res$y[1], res$x[4], res$y[4], col=col, 
+			code = 1, length = length, lwd=lwd)
 	}
 	if( code >= 2 ){
-		arrows(res$x[nr-3], res$y[nr-3], res$x[nr], res$y[nr], col=col, code = 2, length = length)	
+		arrows(res$x[nr-3], res$y[nr-3], res$x[nr], res$y[nr], 
+			col=col, code = 2, length = length, lwd=lwd)	
 	}
 }
 
@@ -213,6 +215,61 @@
 	mdl <- lm( f, data=x )
 	c( coef(summary(mdl))[2,c(1,2,4)], confint( mdl, ind$Y, level=conf.level ) )
 }
+
+.ci.test.lm.perm <- function( x, ind, conf.level, R=500 ){
+	requireNamespace("boot",quietly=TRUE)
+	if( length(ind$Z) > 0 ){
+		ix <- lm( paste(ind$X,"~",paste(ind$Z,collapse=" + ")), data=x )$residuals
+		iy <- lm( paste(ind$Y,"~",paste(ind$Z,collapse=" + ")), data=x )$residuals
+	} else {
+		ix <- x[,ind$X]
+		iy <- x[,ind$Y]
+	}
+	.perm.cor.test(ix,iy,conf.level,R)
+}
+
+.edgeAttributes <- function( x, a ){
+	x <- as.dagitty( x )
+	xv <- .getJSVar()
+	yv <- .getJSVar()
+	tryCatch({
+		.jsassigngraph( xv, x )
+		.jsassign( yv, a )
+		.jsassign( xv, .jsp("DagittyR.edgeAttributes2r(global.",xv,",global.",yv,")") )
+		r <- .jsget(xv)
+	}, finally={.deleteJSVar(xv);.deleteJSVar(yv)})
+	as.data.frame(r)
+}
+
+.ci.test.loess.perm <- function( x, ind, conf.level, R=500, loess.pars=list() ){
+	if( length(ind$Z) > 0 ){
+		ix <- do.call( loess, c(
+			list(formula=paste(ind$X,"~",paste(ind$Z,collapse=" + ")),
+			data=x),loess.pars
+			))$residuals
+		iy <- do.call( loess, c(
+			list(formula=paste(ind$Y,"~",paste(ind$Z,collapse=" + ")),
+			data=x),loess.pars
+			))$residuals
+	} else {
+		ix <- x[,ind$X]
+		iy <- x[,ind$Y]
+	}
+	.perm.cor.test(ix,iy,conf.level,R)
+}
+
+.perm.cor.test <- function( a, b, conf.level, R ){
+	requireNamespace("boot",quietly=TRUE)
+	bo <- boot::boot( cbind(a,b), function(data,i){
+		cor(data[i,1],data[i,2])
+	}, R )
+	c(
+		Estimate=bo$t0,
+		"Std. Error"=sd(bo$t),
+		quantile(bo$t,c((1-conf.level)/2,1-(1-conf.level)/2))
+	)
+}
+
 
 .ci.test.covmat <- function( sample.cov, sample.nobs,
 	ind, conf.level ){
