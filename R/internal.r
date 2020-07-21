@@ -18,11 +18,15 @@
 	}
 }
 
+.odds2p <- function(x){
+	exp(x)/(exp(x)+1)
+}
+
 .arc <- function( x1, y1, x2, y2, xm, ym, col="gray", length=0.1, code=3, lwd=1 ){
 	x <- c(x1,xm,x2)
 	y <- c(y1,ym,y2)
 	res <- xspline(x, y, 1, draw=FALSE)
-	lines(res, col=col)
+	lines(res, col=col, lwd=lwd)
 	nr <- length(res$x)
 	if( code >= 3 ){
 		arrows(res$x[1], res$y[1], res$x[4], res$y[4], col=col, 
@@ -80,6 +84,10 @@
 		ct$source(system.file("js/dagitty-alg.js",package="dagitty"))
 		ct$source(system.file("js/RUtil.js",package="dagitty"))
 		ct$source(system.file("js/example-dags.js",package="dagitty"))
+
+		# Disabling the shorter syntax until ggdag can deal with it
+		ct$eval("GraphSerializer.SHORTEN_SYNTAX = false")
+
 		assign("ct",ct,.dagitty.cache)
 	}
 	get("ct",.dagitty.cache)
@@ -166,6 +174,7 @@
 	if( ! type %in% supported ){
 		stop("Supported kinship types : ",paste(supported,collapse=", ") )
 	}
+	.checkName( x, v )
 	r <- c()
 	xv <- .getJSVar()
 	vv <- .getJSVar()
@@ -206,28 +215,6 @@
 	r
 }
 
-.ri.test <- function( x, ind, conf.level ){
-	if( length(ind$Z) > 0 ){
-		f <- as.formula( paste(ind$X,"~",paste(ind$Y,paste(ind$Z,collapse=" + "),sep=" + ") ) )
-	} else {
-		f <- as.formula( paste(ind$X,"~",ind$Y) )
-	}
-	mdl <- lm( f, data=x )
-	c( coef(summary(mdl))[2,c(1,2,4)], confint( mdl, ind$Y, level=conf.level ) )
-}
-
-.ci.test.lm.perm <- function( x, ind, conf.level, R=500 ){
-	requireNamespace("boot",quietly=TRUE)
-	if( length(ind$Z) > 0 ){
-		ix <- lm( paste(ind$X,"~",paste(ind$Z,collapse=" + ")), data=x )$residuals
-		iy <- lm( paste(ind$Y,"~",paste(ind$Z,collapse=" + ")), data=x )$residuals
-	} else {
-		ix <- x[,ind$X]
-		iy <- x[,ind$Y]
-	}
-	.perm.cor.test(ix,iy,conf.level,R)
-}
-
 .edgeAttributes <- function( x, a ){
 	x <- as.dagitty( x )
 	xv <- .getJSVar()
@@ -241,50 +228,19 @@
 	as.data.frame(r)
 }
 
-.ci.test.loess.perm <- function( x, ind, conf.level, R=500, loess.pars=list() ){
-	if( length(ind$Z) > 0 ){
-		ix <- do.call( loess, c(
-			list(formula=paste(ind$X,"~",paste(ind$Z,collapse=" + ")),
-			data=x),loess.pars
-			))$residuals
-		iy <- do.call( loess, c(
-			list(formula=paste(ind$Y,"~",paste(ind$Z,collapse=" + ")),
-			data=x),loess.pars
-			))$residuals
-	} else {
-		ix <- x[,ind$X]
-		iy <- x[,ind$Y]
-	}
-	.perm.cor.test(ix,iy,conf.level,R)
+.vertexAttributes <- function( x, a ){
+	x <- as.dagitty( x )
+	xv <- .getJSVar()
+	yv <- .getJSVar()
+	tryCatch({
+		.jsassigngraph( xv, x )
+		.jsassign( yv, a )
+		.jsassign( xv, .jsp("DagittyR.vertexAttributes2r(global.",xv,",global.",yv,")") )
+		r <- .jsget(xv)
+	}, finally={.deleteJSVar(xv);.deleteJSVar(yv)})
+	as.data.frame(r)
 }
 
-.perm.cor.test <- function( a, b, conf.level, R ){
-	requireNamespace("boot",quietly=TRUE)
-	bo <- boot::boot( cbind(a,b), function(data,i){
-		cor(data[i,1],data[i,2])
-	}, R )
-	c(
-		Estimate=bo$t0,
-		"Std. Error"=sd(bo$t),
-		quantile(bo$t,c((1-conf.level)/2,1-(1-conf.level)/2))
-	)
-}
-
-
-.ci.test.covmat <- function( sample.cov, sample.nobs,
-	ind, conf.level ){
-	vars <- unlist(c(ind$X,ind$Y,ind$Z))
-	sample.cov <- sample.cov[vars,vars]
-	M <- MASS::ginv(sample.cov)
-	pcor <- -M[1,2] / sqrt( M[1,1] * M[2,2] )
-	pcor.z <- atanh( pcor )
-	pcor.z.sem <- 1 / sqrt( sample.nobs - length(ind$Z) - 3 )
-	pcor.stat <- pcor.z / pcor.z.sem
-	crit <- qnorm( (1-conf.level)/2, lower.tail=FALSE )
-	c( pcor, atan(pcor.z.sem), 2 * pnorm( abs(pcor.stat), lower.tail=FALSE ),
-		atan( pcor.z-crit*pcor.z.sem ),
-		atan( pcor.z+crit*pcor.z.sem ) )
-}
 
 .tetradsFromData <- function( x, tets, i=seq_len(nrow(x)) ){
 	M <- cov(x[i,])
@@ -319,4 +275,19 @@
 	finally={.deleteJSVar(xv)})
 	structure(r,class="dagitty")
 }
+
+.checkName <- function(x, v) {
+  if (!(v %in% names(x))) 
+    stop(paste(v, "is not a variable in `x`"))
+}
+
+.checkAllNames <- function(x, vv) {
+	nx <- names(x)
+	for( v in vv ){ 
+		if (!(v %in% nx)){
+			stop(paste(v, "is not a variable in `x`"))
+		}
+	}
+}
+
 

@@ -20,8 +20,7 @@ not given.}
 \description{
 Test whether a set fulfills the adjustment criterion, that means,
 it removes all confounding bias when estimating a *total* effect.
-This is an extension of Pearl's 
-Back-door criterion (Shpitser et al, 2010; van der Zander et al, 
+This is an #' Back-door criterion (Shpitser et al, 2010; van der Zander et al, 
 2014; Perkovic et al, 2015) 
 which is complete in the sense that either a set
 fulfills this criterion, or it does not remove all confounding bias.
@@ -39,4 +38,3 @@ I. Shpitser, T. VanderWeele and J. M. Robins (2010), On the
 validity of covariate adjustment for estimating causal effects. In
 \emph{Proceedings of UAI 2010.}
 }
-

@@ -3,8 +3,8 @@
 #' @importFrom MASS ginv
 #' @importFrom grDevices dev.size
 #' @importFrom methods is
-#' @importFrom utils tail
-#' @importFrom stats as.formula coef confint cov cor lm pnorm qnorm quantile runif loess sd
+#' @importFrom utils tail combn
+#' @importFrom stats as.formula coef confint cov cov2cor cor lm pnorm pchisq qnorm quantile runif loess sd weighted.mean complete.cases rbinom
 #' @importFrom graphics abline arrows axis lines par plot plot.new segments strheight strwidth text xspline
 NULL
 
@@ -115,6 +115,21 @@ getExample <- function( x ){
 #' tetrad truly vanishes in simulated data). For more elaborate simulation studies, please
 #' use the lavaan package or similar facilities in other packages.
 #'
+#' @param x the input graph, a DAG (which may contain bidirected edges).
+#' @param N number of samples to generate.
+#' @param b.lower lower bound for random path coefficients, applied if \code{b.default=NULL}.
+#' @param b.upper upper bound for path coefficients.
+#' @param b.default default path coefficient applied to arrows for which no coefficient is 
+#'  defined in the model syntax.
+#' @param eps residual variance (only meaningful if \code{standardized=FALSE}).
+#' @param empirical logical. If true, the empirical covariance matrix will be equal to the
+#'  population covariance matrix.
+#' @param standardized logical. If true, a standardized population covariance matrix
+#'   is generated (all variables have variance 1).
+#' @param verbose logical. If true, prints the generated population covariance matrix.
+#' 
+#' @return Returns a data frame containing \code{N} values for each variable in \code{x}.
+#'
 #' @details Data are generated in the following manner. 
 #' Each directed arrow is assigned a path coefficient that can be given using the attribute
 #' "beta" in the model syntax (see the examples). All coefficients not set in this manner are
@@ -126,15 +141,6 @@ getExample <- function( x ){
 #' \code{x} is again chosen at random from the given interval; if \code{x} is negative,
 #' one path coefficient is set to \code{-sqrt(x)} and the other to \code{sqrt(x)}. All
 #' residual variances are set to \code{eps}.
-#' 
-#' @param x the input graph, a DAG (which may contain bidirected edges).
-#' @param N number of samples to generate.
-#' @param b.lower lower bound for random path coefficients, applied if \code{b.default=NULL}.
-#' @param b.upper upper bound for path coefficients.
-#' @param b.default default path coefficient applied to arrows for which no coefficient is 
-#'  defined in the model syntax.
-#' @param eps residual variance (only meaningful if \code{standardized=FALSE}).
-#' @param standardized whether a standardized output is desired (all variables have variance 1).
 #'
 #' If \code{standardized=TRUE}, all path coefficients are interpreted as standardized coefficients.
 #' But not all standardized coefficients are compatible with all graph structures.
@@ -143,7 +149,6 @@ getExample <- function( x ){
 #' 1. For large graphs with many parallel paths, it can be very difficult to find coefficients 
 #' that work.
 #' 
-#' @return Returns a data frame containing \code{N} values for each variable in \code{x}.
 #' 
 #' @examples
 #' ## Simulate data with pre-defined path coefficients of -.6
@@ -153,11 +158,197 @@ getExample <- function( x ){
 #'
 #' 
 #' @export
-simulateSEM <- function( x, b.default=NULL, b.lower=-.6, b.upper=.6, eps=1, N=500, standardized=TRUE ){
+simulateSEM <- function( x, b.default=NULL, b.lower=-.6, b.upper=.6, eps=1, N=500, standardized=TRUE,
+	empirical=FALSE, verbose=FALSE ){
 	if( !requireNamespace( "MASS", quietly=TRUE ) ){
 		stop("This function requires the 'MASS' package!")
 	}
 	.supportsTypes( x, c("dag") )
+	x <- as.dagitty( x )
+	e <- .edgeAttributes( x, "beta" )
+
+	e$a <- as.double(as.character(e$a))
+	b.not.set <- is.na(e$a)
+	if( is.null( b.default ) ){
+		e$a[b.not.set] <- runif(sum(b.not.set),b.lower,b.upper)
+	} else {
+		e$a[b.not.set] <- b.default
+	}
+
+	v <- .vertexAttributes( x, "eps" )
+	v$a <- as.double(as.character(v$a))
+	v.not.set <- is.na(v$a)
+	v$a[v.not.set] <- eps
+
+	ovars <- names(x)
+	lats <- c()
+	nV <- length(ovars)
+	nL <- sum(e$e=="<->")
+	if( nrow(e) > 0 ){
+		vars <- paste0("v",ovars)
+		if( nL > 0 ){
+			lats <- paste0("l",seq_len(nL))
+		} else {
+			lats <- c()
+		}
+		Beta <- matrix( 0, nrow=nV+nL, ncol=nV+nL )
+		rownames(Beta) <- colnames(Beta) <- c(vars,lats)
+		cL <- 1
+		for( i in seq_len( nrow(e) ) ){
+			b <- e$a[i]
+			if( e$e[i] == "<->" ){
+				lV <- paste0("l",cL) 
+				lb <- sqrt(abs(b))
+				Beta[lV,paste0("v",e$v[i])] <- lb
+				if( b < 0 ){
+					Beta[lV,paste0("v",e$w[i])] <- -lb
+				} else {
+					Beta[lV,paste0("v",e$w[i])] <- lb
+				}
+				cL <- cL + 1
+			} else if( e$e[i] == "->" ){
+				Beta[paste0("v",e$v[i]),paste0("v",e$w[i])] <- b
+			}
+		}
+		L <- (diag( 1, nV+nL ) - Beta)
+		Li <- MASS::ginv( L )
+		if( standardized == TRUE ){
+			Phi <- MASS::ginv( t(Li)^2 ) %*% rep(eps,nrow(Beta))
+			Phi <- diag( c(Phi), nV+nL )
+		} else {
+			veps <- rep( eps, nV+nL )
+			veps[1:nV] <- v$a[match(ovars,v$v)]
+			Phi <- diag( veps, nV+nL )
+		}
+		Sigma <- t(Li) %*% Phi %*% Li
+	} else {
+		if( standardized == TRUE ){
+			Sigma <- diag(eps,nV+nL)
+		} else {
+			veps <- rep( eps, nV+nL )
+			veps[1:nV] <- v$a[match(ovars,v$v)]
+			Sigma <- diag( veps, nV+nL )
+		}
+	}
+	if( verbose ){
+		SigmaC <- Sigma
+		colnames( SigmaC ) <- rownames( SigmaC ) <- c(ovars,lats)
+		print( veps )
+		print( SigmaC )
+	}
+	r <- MASS::mvrnorm( N, rep(0,nV+nL), Sigma, empirical=empirical )[,1:nV,drop=FALSE]
+	colnames(r) <- ovars
+	r <- as.data.frame(r)
+	r[,setdiff(ovars,latents(x)),drop=FALSE]
+}
+
+#' Simulate Binary Data from DAG Structure
+#'
+#' Interprets input DAG as a structural description of a logistic
+#' model in which each variable is binary and its log-odds ratio is 
+#' a linear combination of its parent values.
+#'
+#' @param x the input graph, a DAG (which may contain bidirected edges).
+#' @param N number of samples to generate.
+#' @param b.lower lower bound for random path coefficients, applied if \code{b.default=NULL}.
+#' @param b.upper upper bound for path coefficients.
+#' @param b.default default path coefficient applied to arrows for which no coefficient is 
+#'  defined in the model syntax.
+#' @param eps base log-odds ratio.
+#' @param verbose logical. If true, prints the order in which the data are generated (which
+#'  should be a topological order).
+#' 
+#' @export
+simulateLogistic <- function( x, b.default=NULL, 
+	b.lower=-.6, b.upper=.6, eps=0, N=500,
+	verbose=FALSE ){
+	.supportsTypes( x, c("dag") )
+	x <- as.dagitty( x )
+	e <- .edgeAttributes( x, "beta" )
+	e$a <- as.double(as.character(e$a))
+	b.not.set <- is.na(e$a)
+	if( is.null( b.default ) ){
+		e$a[b.not.set] <- runif(sum(b.not.set),b.lower,b.upper)
+	} else {
+		e$a[b.not.set] <- b.default
+	}
+	ovars <- names(x)
+	nV <- length(ovars)
+	nL <- sum(e$e=="<->")
+	lats <- c()
+	vars <- paste0("v",ovars)
+	if( nrow(e) > 0 ){
+		if( nL > 0 ){
+			lats <- paste0("l",seq_len(nL))
+		}
+		Beta <- matrix( 0, nrow=nV+nL, ncol=nV+nL )
+		rownames(Beta) <- colnames(Beta) <- c(vars,lats)
+		cL <- 1
+		for( i in seq_len( nrow(e) ) ){
+			b <- e$a[i]
+			if( e$e[i] == "<->" ){
+				lV <- paste0("l",cL) 
+				lb <- sqrt(abs(b))
+				Beta[lV,paste0("v",e$v[i])] <- lb
+				if( b < 0 ){
+					Beta[lV,paste0("v",e$w[i])] <- -lb
+				} else {
+					Beta[lV,paste0("v",e$w[i])] <- lb
+				}
+				cL <- cL + 1
+			} else if( e$e[i] == "->" ){
+				Beta[paste0("v",e$v[i]),paste0("v",e$w[i])] <- b
+			}
+		}
+	} else {
+		Beta <- diag(1,nV)
+		colnames(Beta) <- vars
+	}
+	if( verbose ){
+		print(Beta)
+	}
+	rootNodes <- which( Beta != 0 )
+	r <- matrix( 0, ncol=ncol(Beta), nrow=N )
+	colnames(r) <- colnames(Beta)
+	roots <- !(colnames(Beta) %in% paste0("v",unique(e$w)))
+
+	for( i in colnames(Beta)[roots] ){
+		if( verbose ){
+			print(paste("Generating",i))
+		}
+		r[,i] <- 2*rbinom( N, 1, .odds2p(eps) )-1
+	}
+	tord <- unlist(topologicalOrdering( x )[ovars])
+	if( verbose ){
+		print("topological ordering: ")
+		print(tord)
+	}
+	for( i in which(!roots)[order(tord[!roots])] ){
+		cn <- colnames(Beta)[i]
+		if( verbose ){
+			print(paste("Generating",cn))
+		}
+		p <- .odds2p( r %*% Beta[,i] )
+		r[,cn] <- 2*rbinom( N, 1, p )-1
+	}
+	r <- r[,seq(1,nV),drop=FALSE]
+	colnames(r) <- ovars
+	r <- as.data.frame(r)
+	r <- r[,setdiff(ovars,latents(x)),drop=FALSE]
+	r[] <- lapply(r,function(x) factor(x,levels=c(-1,1)))
+	r
+}
+
+#' Implied Covariance Matrix of a Gaussian Graphical Model
+#'
+#' @inheritParams simulateSEM
+#'
+#' @export
+impliedCovarianceMatrix <- function( x, b.default=NULL, b.lower=-.6, b.upper=.6, eps=1, standardized=TRUE ){
+	if( !requireNamespace( "MASS", quietly=TRUE ) ){
+		stop("This function requires the 'MASS' package!")
+	}
+	.supportsTypes( x, "dag" )
 	x <- as.dagitty( x )
 	e <- .edgeAttributes( x, "beta" )
 	e$a <- as.double(as.character(e$a))
@@ -208,10 +399,9 @@ simulateSEM <- function( x, b.default=NULL, b.lower=-.6, b.upper=.6, eps=1, N=50
 	} else {
 		Sigma <- diag(1,nV+nL)
 	}
-	r <- MASS::mvrnorm( N, rep(0,nV+nL), Sigma )[,1:nV]
-	colnames(r) <- ovars
-	r <- as.data.frame(r)
-	r[,setdiff(ovars,latents(x))]
+	Sigma <- Sigma[1:nV,1:nV]
+	colnames( Sigma ) <- rownames( Sigma ) <- ovars
+	Sigma[setdiff(ovars,latents(x)),setdiff(ovars,latents(x))]
 }
 
 #' Ancestral Relations
@@ -317,6 +507,24 @@ orientPDAG <- function( x ){
 	.graphTransformer( x, "cgToRcg" )
 }
 
+#' Convert DAG to MAG.
+#'
+#' Given a DAG, possibly with latent variables, construct a MAG that represents its
+#' marginal independence model.
+#'
+#' @param x the input graph, a DAG
+#' 
+#' @examples
+#' toMAG( "dag { ParentalSmoking->Smoking 
+#'   { Profession [latent] } -> {Income->Smoking}
+#'   Genotype -> {Smoking->LungCancer} }")
+#' @export
+#'
+toMAG <- function( x ){
+	.supportsTypes( x, "dag" )
+	.graphTransformer( x, "dagToMag" )
+}
+
 #' Generating Equivalent Models
 #' 
 #' \code{equivalenceClass(x)} generates a complete partially directed acyclic graph 
@@ -386,8 +594,46 @@ equivalentDAGs <- function( x, n=100 ){
 #'
 #' @export
 moralize <- function( x ){
+	x <- as.dagitty( x )
 	.supportsTypes( x, c("dag","mag","pdag") )
 	.graphTransformer( x, "moralGraph" )
+}
+
+#' Extract Structural Part from Structural Equation Model
+#'
+#' Removes all observed variables from the input graph.
+#'
+#' @param x the input graph, a DAG.
+#'
+#' @details Assumes that x is a graph where there are edges between 
+#' the latent variables, between the observed variables, and 
+#' from latent to observed variables, but no edge between
+#' a latent L and an observed X may have an arrowhead at L.
+#
+#' @export
+structuralPart <- function( x ){
+	x <- as.dagitty( x )
+	.supportsTypes( x, c("dag","digraph") )
+	.graphTransformer( x, "structuralPart" )
+}
+
+#' Extract Measurement Part from Structural Equation Model
+#'
+#' Removes all edges between latent variables, then removes any
+#' latent variables without adjacent edges, then returns the graph.
+#'
+#' @param x the input graph, a DAG.
+#'
+#' @details Assumes that x is a graph where there are edges between 
+#' the latent variables, between the observed variables, and 
+#' from latent to observed variables, but no edge between
+#' a latent L and an observed X may have an arrowhead at L.
+#'
+#' @export
+measurementPart <- function( x ){
+	x <- as.dagitty( x )
+	.supportsTypes( x, c("dag","digraph") )
+	.graphTransformer( x, "measurementPart" )
 }
 
 #' Back-Door Graph
@@ -445,6 +691,7 @@ ancestorGraph <- function( x, v=NULL ){
 	if( is.null(v) ){
 		v <- c(exposures(x),outcomes(x),adjustedNodes(x))
 	} else {
+		.checkAllNames( x, v )
 		v <- as.list(v)
 	}
 	xv <- .getJSVar()
@@ -544,7 +791,7 @@ setVariableStatus <- function( x, status, value ) {
 	if( !(status %in% allowed.statuses) ){
 		stop( "Status must be one of: ", paste(allowed.statuses,collapse=", ") )
 	}
-	
+	.checkAllNames( x, value )
 	xv <- .getJSVar()
 	vv <- .getJSVar()
 	tryCatch({
@@ -674,12 +921,24 @@ coordinates <- function( x ){
 	xv2 <- .getJSVar()
 	tryCatch({
 		.jsassigngraph( xv, x )
-		for( n in intersect( names(value$x), names(x) ) ){
-			.jsassign( xv2, as.character(n) )
-			.jseval(.jsp("global.",xv,".vertices.get(",xv2,").layout_pos_x=",
-				as.numeric(value$x[n])))
-			.jseval(.jsp("global.",xv,".vertices.get(",xv2,").layout_pos_y=",
-				as.numeric(value$y[n])))
+		if( is.null( value ) ){
+			for( n in names(x) ){
+				.jsassign( xv2, as.character(n) )
+				.jseval(.jsp("delete global.",xv,".vertices.get(",xv2,
+					")['layout_pos_x']"))
+				.jseval(.jsp("delete global.",xv,".vertices.get(",xv2,
+					")['layout_pos_y']"))
+			}
+		} else {
+			for( n in intersect( names(value$x), names(x) ) ){
+				.jsassign( xv2, as.character(n) )
+				.jseval(.jsp("global.",xv,".vertices.get(",xv2,
+					").layout_pos_x=",
+					as.numeric(value$x[n])))
+				.jseval(.jsp("global.",xv,".vertices.get(",xv2,
+					").layout_pos_y=",
+					as.numeric(value$y[n])))
+			}
 		}
 		.jsassign( xv, .jsp("global.",xv,".toString()") )
 		r <- .jsget( xv )
@@ -787,6 +1046,8 @@ is.dagitty <- function(x) inherits(x,"dagitty")
 #' @examples
 #' ## Generate a layout for the M-bias graph and plot it
 #' plot( graphLayout( dagitty( "dag { X <- U1 -> M <- U2 -> Y } " ) ) )
+#' ## Plot larger graph and abbreviate its variable names.
+#' plot( getExample("Shrier"), abbreviate.names=TRUE )
 #'
 #' @export
 graphLayout <- function( x, method="spring" ){
@@ -811,17 +1072,30 @@ graphLayout <- function( x, method="spring" ){
 #' function.
 #'
 #' @param x the input graph, a DAG, MAG, or PDAG.
+#' @param abbreviate.names logical. Whether to abbreviate variable names.
+#' @param show.coefficients logical. Whether to plot coefficients defined in the graph syntax
+#'  on the edges.
 #' @param ... not used.
 #'
 #' @export
-plot.dagitty <- function( x, ... ){	
+plot.dagitty <- function( x,
+	abbreviate.names=FALSE, 
+	show.coefficients=FALSE,
+	... ){	
 	x <- as.dagitty( x )
 	.supportsTypes(x,c("dag","mag","pdag"))
 	coords <- coordinates( x )
         if( any( !is.finite( coords$x ) | !is.finite( coords$y ) ) ){
-                stop("Please supply plot coordinates for graph! See ?coordinates and ?graphLayout.")
+			message("Plot coordinates for graph not supplied! Generating coordinates, see ?coordinates for how to set your own.")
+			x <- graphLayout(x)
+			coords <- coordinates(x)
         }
-	labels <- names(coords$x)
+	if( abbreviate.names ){
+		labels <- abbreviate(names(coords$x))
+	} else {
+		labels <- names(coords$x)
+	}
+	omar <- par("mar")
 	par(mar=rep(0,4))
 	plot.new()
 	par(new=TRUE)
@@ -844,6 +1118,10 @@ plot.dagitty <- function( x, ... ){
 	asp <- par("pin")[1]/diff(par("usr")[1:2]) /
 		(par("pin")[2]/diff(par("usr")[3:4]))
 	ex <- edges(x)
+	if( show.coefficients ){
+		ea <- .edgeAttributes(x,"beta")
+		ex <- merge( ex, ea )
+	}
 	ax1 <- rep(0,nrow(ex))
 	ax2 <- rep(0,nrow(ex))
 	ay1 <- rep(0,nrow(ex))
@@ -890,13 +1168,22 @@ plot.dagitty <- function( x, ... ){
 		ax2[directed], -ay2[directed], length=0.1, col="gray" )
 	segments( ax1[undirected], -ay1[undirected], 
 		ax2[undirected], -ay2[undirected], col="black", lwd=2 )
-	for( i in which( has.control.point ) ){
+	ic <- which( has.control.point )
+	for( i in ic ){
 		.arc( ax1[i], -ay1[i], 
 			ax2[i], -ay2[i], axc[i], -ayc[i], 
-			col="gray", 
-			code=acode[i], length=0.1, lwd=2 )
+			col=c("gray","black")[1+(acode[i]==0)], 
+			code=acode[i], length=0.1, lwd=1+(acode[i]==0) )
 	}
-	text( coords$x, -coords$y[labels], labels )
+	if( show.coefficients ){
+		axm <- (ax1+ax2)/2
+		aym <- (ay1+ay2)/2
+		axm[ic] <- axc[ic]
+		aym[ic] <- ayc[ic]
+		text( axm, -aym, as.character(ex$a)) #, adj=0.5*c(sign(ax1-ax2),sign(ay1-ay2)) )
+	}
+	text( coords$x, -coords$y, labels )
+	par(mar=omar)
 }
 
 #' Covariate Adjustment Sets
@@ -923,6 +1210,9 @@ plot.dagitty <- function( x, ... ){
 #' of exposures and outcomes, minus (possible) descendants of nodes on proper causal
 #' paths. This canonical adjustment set is always valid if any valid set exists
 #' at all.
+#' @param max.results integer. The listing of adjustment set is stopped once
+#' this many results have been found. Use \code{Inf} to generate them all. 
+#' This only applys when \code{type="minimal"}.
 #'
 #' @details
 #' If the input graph is a MAG or PAG, then it must not contain any undirected
@@ -956,38 +1246,48 @@ plot.dagitty <- function( x, ... ){
 #' adjustmentSets( g )
 #' @export
 adjustmentSets <- function( x, exposure=NULL, outcome=NULL, 
-	type=c("minimal","canonical","all"), effect=c("total","direct") ){
+	type=c("minimal","canonical","all"), effect=c("total","direct"),
+	max.results=Inf ){
 	effect <- match.arg( effect )
 	type <- match.arg( type )
+
+	if( is.null(exposure) ){
+		exposure <- exposures(x)
+	}
+	if( is.null(outcome) ){
+		outcome <- outcomes(x)
+	}
+
 	if( effect == "direct" && type != "minimal" ){
 		stop("Only minimal adjustment sets are supported for direct effects!")
 	}
 	x <- as.dagitty( x )
 	.supportsTypes( x, c("dag","mag","pdag","pag") )
-	if( !is.null( exposure ) ){
-		exposures(x) <- exposure
-	}
-	if( !is.null( outcome ) ){
-		outcomes(x) <- outcome
-	}
-	if( length(exposures(x)) == 0 || length(outcomes(x)) == 0 ){
+	.checkAllNames( x, c(exposure, outcome) )
+	if( length(exposure) == 0 || length(outcome) == 0 ){
 		stop("Both exposure(s) and outcome(s) need to be set!")
 	}
+	exposures(x) <- exposure
+	outcomes(x) <- outcome
 
 	if( type == "minimal" ){
 		xv <- .getJSVar()
+		command.close <- ")"
+		if( is.finite( max.results ) ){
+			command.close <- paste(",[],[],",as.integer(max.results),")")
+		}
 		tryCatch({
 			.jsassigngraph( xv, x )
 			if( effect=="direct" ){	
-				.jsassign( xv, .jsp("GraphAnalyzer.listMsasDirectEffect(global.",xv,")") )
+				.jsassign( xv, .jsp("GraphAnalyzer.listMsasDirectEffect(global.",xv,command.close) )
 			} else {
-				.jsassign( xv, .jsp("GraphAnalyzer.listMsasTotalEffect(global.",xv,")") )
+				.jsassign( xv, .jsp("GraphAnalyzer.listMsasTotalEffect(global.",xv,command.close) )
 			}
 			.jsassign( xv, .jsp("DagittyR.adj2r(global.",xv,")"))
 			r <- structure( .jsget(xv), class="dagitty.sets" )
 		},finally={.deleteJSVar(xv)})
 	} else if( type == "all" ){
-		covariates <- setdiff( names( x ), c( exposures(x), outcomes(x) ) )
+		covariates <- setdiff( names( x ), c( exposure, outcome ) )
 		subsets <- (expand.grid( rep( list(0:1),length(covariates)) ))
 		r <- lapply( 1:nrow(subsets), function(i){
 			Z <- covariates[as.logical(subsets[i,])]
@@ -1017,8 +1317,7 @@ adjustmentSets <- function( x, exposure=NULL, outcome=NULL,
 #' 
 #' Test whether a set fulfills the adjustment criterion, that means,
 #' it removes all confounding bias when estimating a *total* effect.
-#' This is an extension of Pearl's 
-#' Back-door criterion (Shpitser et al, 2010; van der Zander et al, 
+#' This is an #' Back-door criterion (Shpitser et al, 2010; van der Zander et al, 
 #' 2014; Perkovic et al, 2015) 
 #' which is complete in the sense that either a set
 #' fulfills this criterion, or it does not remove all confounding bias.
@@ -1050,15 +1349,20 @@ isAdjustmentSet <- function( x, Z, exposure=NULL, outcome=NULL ){
 	.supportsTypes( x, c("dag","mag","pdag","pag") )
 	xv <- .getJSVar()
 	Zv <- .getJSVar()
-	if( !is.null( exposure ) ){
-		exposures(x) <- exposure
+
+	if( is.null(exposure) ){
+		exposure <- exposures(x)
 	}
-	if( !is.null( outcome ) ){
-		outcomes(x) <- outcome
+	if( is.null(outcome) ){
+		outcome <- outcomes(x)
 	}
-	if( length(exposures(x)) == 0 || length(outcomes(x)) == 0 ){
+	.checkAllNames( x, c(exposure, outcome) )
+	if( length(exposure) == 0 || length(outcome) == 0 ){
 		stop("Both exposure(s) and outcome(s) need to be set!")
 	}
+	exposures(x) <- exposure
+	outcomes(x) <- outcome
+
 	tryCatch({
 		.jsassigngraph( xv, x )
 		.jsassign( Zv, as.list(Z) )
@@ -1071,6 +1375,56 @@ isAdjustmentSet <- function( x, Z, exposure=NULL, outcome=NULL ){
 	r
 }
 
+#' Test for Cycles
+#'
+#' Returns \code{TRUE} if the given graph does not contain a directed cycle.
+#'
+#' @param x the input graph, of any graph type.
+#'
+#' @details This function will only consider simple directed edges in the
+#' given graph.
+#'
+#' @examples
+#' g1 <- dagitty("dag{X -> Y -> Z}")
+#' stopifnot( isTRUE(isAcyclic( g1 )) )
+#' g2 <- dagitty("dag{X -> Y -> Z -> X}")
+#' stopifnot( isTRUE(!isAcyclic( g2 )) )
+#' g3 <- dagitty("mag{X -- Y -- Z -- X}")
+#' stopifnot( isTRUE(isAcyclic( g3 )) )
+#' @export
+isAcyclic <- function( x ){
+	x <- as.dagitty( x )
+	xv <- .getJSVar()
+	tryCatch({
+		.jsassigngraph( xv, x )
+		.jsassign( xv, .jsp("GraphAnalyzer.containsCycle(",xv,")===false") )
+		r <- .jsget(xv)
+	},finally={
+		.deleteJSVar(xv)
+	})
+	r
+}
+
+#' Test for Colliders
+#'
+#' Returns \code{TRUE} if three given variables form a collider in a given graph.
+#'
+#' @param x the input graph, a DAG.
+#' @param u the first endpoint of the putative collider
+#' @param v the midpoint of the putative collider
+#' @param w the second endpoint of the putative collider
+#' @examples
+#' g1 <- dagitty("dag{X -> Y -> Z}")
+#' stopifnot( isTRUE(!isCollider( g1, "X", "Y", "Z" )) )
+#' g2 <- dagitty("dag{X -> Y <- Z }")
+#' stopifnot( isTRUE(isCollider( g2, "X", "Y", "Z" )) )
+#' @export
+isCollider <- function( x, u, v, w ) {
+	x <- as.dagitty( x )
+	.supportsTypes( x, c("dag") )
+	.checkName( x, v )
+	v %in% intersect( children( x, u ), children( x, w ) )
+}
 
 #' List Implied Conditional Independencies
 #'
@@ -1078,14 +1432,18 @@ isAdjustmentSet <- function( x, Z, exposure=NULL, outcome=NULL ){
 #' probability distribution compatible with the given model.
 #'
 #' @param x the input graph, a DAG, MAG, or PDAG.
-#' @param type can be one of "missing.edge" or "basis.set". With the former, one testable 
-#' implication is returned per missing edge of the graph. With the latter, one testable
+#' @param type can be one of "missing.edge", "basis.set", or "all.pairs". With the first, one or 
+#' more minimal testable implication (with the smallest possible conditioning set)
+#' is returned per missing edge of the graph. With "basis.set", one testable
 #' implication is returned per vertex of the graph that has non-descendants other than
 #' its parents. Basis sets can be smaller, but they involve higher-dimensional independencies,
-#' whereas missing edge sets involve only bivariate independencies.
+#' whereas missing edge sets involve only independencies between two variables at a time.
+#' With "all.pairs", the function will return a list of all implied conditional independencies
+#' between two variables at a time. Beware, because this can be a very long list and it 
+#' may not be feasible to compute this except for small graphs.
 #' @param max.results integer. The listing of conditional independencies is stopped once
 #' this many results have been found. Use \code{Inf} to generate them all. This applies
-#' only when \code{type="missing.edge"}.
+#' only when \code{type="missing.edge"} or \code{type="all"}.
 #' @examples
 #' g <- dagitty( "dag{ x -> m -> y }" )
 #' impliedConditionalIndependencies( g ) # one
@@ -1093,11 +1451,38 @@ isAdjustmentSet <- function( x, Z, exposure=NULL, outcome=NULL ){
 #' impliedConditionalIndependencies( g ) # none
 #' @export
 impliedConditionalIndependencies <- function( x, type="missing.edge", max.results=Inf ){
-	if( ! type %in% c("missing.edge","basis.set") ){
-		stop("'type' must be one of: missing.edge, basis.set")
-	}
+	type <- match.arg( type, c("missing.edge","basis.set", "all.pairs") )
 	x <- as.dagitty( x )
 	.supportsTypes( x, c("dag","mag","pdag") )
+	if( type == "all.pairs" ){
+		vars <- names( x )
+		if( length(vars) < 2 ){
+			return( structure( list(), class="dagitty.cis" ) )
+		}
+		r <- unlist( combn( vars, 2, FUN=function(v){
+			covariates <- setdiff( vars, v )
+			if( length(covariates) == 0 ){
+				if( dseparated( x, v[1], v[2] ) ){
+					return(list(structure(
+						list(X=v[1],Y=v[2],Z=list()), 
+						class="dagitty.ci")
+					))
+				} else {
+					return(list())
+				}
+			}
+			subsets <- expand.grid( rep( list(c(F,T)),length(covariates)) )
+			wh <- which( apply( subsets, 1, 
+				function( w ) dseparated( x, v[1], v[2], covariates[w] ) ) )
+			if( length(wh) > 0 ){
+				lapply( wh, function(i) structure(
+					list(X=v[1],Y=v[2],Z=unlist(covariates[unlist(subsets[i,])]) ), class="dagitty.ci") )
+			} else {
+				list()
+			}
+		}, simplify=FALSE), recursive=FALSE)
+		return( structure(r, class="dagitty.cis" ) )
+	}
 
 	xv <- .getJSVar()
 	tryCatch({
@@ -1151,16 +1536,18 @@ impliedConditionalIndependencies <- function( x, type="missing.edge", max.result
 instrumentalVariables <- function( x, exposure=NULL, outcome=NULL ){
 	x <- as.dagitty( x )
 	.supportsTypes( x, "dag" )
-
-	if( !is.null( exposure ) ){
-		exposures(x) <- exposure
+	.checkAllNames( x, c(exposure, outcome) )
+	if( is.null(exposure) ){
+		exposure <- exposures(x)
 	}
-	if( !is.null( outcome ) ){
-		outcomes(x) <- outcome
+	if( is.null(outcome) ){
+		outcome <- outcomes(x)
 	}
-	if( length(exposures(x)) != 1 || length(outcomes(x)) != 1 ){
-		stop("Both exposure(s) and outcome(s) need to be set!")
+	if( length(exposure) != 1 || length(outcome) != 1 ){
+		stop("Both exposure(s) and outcome(s) need to be set to exactly one variable!")
 	}
+	exposures(x) <- exposure
+	outcomes(x) <- outcome
 
 	xv <- .getJSVar()
 	tryCatch({
@@ -1232,7 +1619,10 @@ vanishingTetrads <- function( x, type=NA ){
 #' converts models specified in lavaan syntax to dagitty graphs.
 #'
 #' @param x data frame, lavaan parameter table such as returned by 
-#' \code{\link[lavaan]{lavaanify}}.
+#' \code{\link[lavaan]{lavaanify}}. Can also be a \code{lavaan} object
+#' or a lavaan model string.
+#' @param digits number of significant digits to use when representing 
+#' path coefficients, if any
 #' @param ... Not used.
 #'
 #' @examples
@@ -1247,22 +1637,35 @@ vanishingTetrads <- function( x, type=NA ){
 #' C1 ~~ C2 \n C1 ~~ C3 \n C1 ~~ C4 \n C1 ~~ C5
 #' C2 ~~ C3 \n C2 ~~ C4 \n C2 ~~ C5
 #' C3 ~~ C4 \n C3 ~~ C5",fixed.x=FALSE)
-#' plot( graphLayout( lavaanToGraph( mdl ) ) )
+#' plot( lavaanToGraph( mdl ) )
 #' }
 #' @export
-lavaanToGraph <- function( x, ... ){
+lavaanToGraph <- function( x, digits=3, ... ){
+	if( is(x,"lavaan") ){
+		x <- lavaan::parTable(x)
+	} else if( is.character(x) ) {
+		x <- lavaan::lavaanify(lavaan::lavParseModelString(x))
+		x$est <- x$ustart
+	}
+	if( "est" %in% colnames(x) ){
+		bt <- function(i){
+			paste(" [beta=",signif(x$est[i],digits),"]",sep="")
+		}
+	} else {
+		bt <- function(i){ "" }
+	}
 	latents <- c()
 	arrows <- c()
 	for( i in seq_len( nrow(x) ) ){
 		if( x$op[i] == "=~" ){
 			latents <- union(latents,x$lhs[i])
-			arrows <- c(arrows,paste(x$lhs[i]," -> ",x$rhs[i]))
+			arrows <- c(arrows,paste(x$lhs[i]," -> ",x$rhs[i],bt(i)))
 		}
 		if( x$op[i] == "~" ){
-			arrows <- c(arrows,paste(x$lhs[i]," <- ",x$rhs[i]))
+			arrows <- c(arrows,paste(x$lhs[i]," <- ",x$rhs[i],bt(i)))
 		}
 		if( x$op[i] == "~~" && (x$lhs[i] != x$rhs[i]) ){
-			arrows <- c(arrows,paste(x$lhs[i]," <-> ",x$rhs[i]))
+			arrows <- c(arrows,paste(x$lhs[i]," <-> ",x$rhs[i],bt(i)))
 		}
 	}
 	if( length(latents) > 0 ){
@@ -1277,9 +1680,8 @@ lavaanToGraph <- function( x, ... ){
 #' @export
 toString.dagitty <- function( x, format="dagitty", ... ){
 	x <- as.dagitty( x )
-	if( !format %in% c("dagitty","tikz","lavaan","dagitty.old") ){
-		stop( "Unsupported export format: ", format )
-	}
+	format <- match.arg( format, 
+		c("dagitty","tikz","lavaan","dagitty.old","bnlearn","singular") )
 	r <- NULL
 	if( format == "dagitty" ){
 		r <- as.character( x )
@@ -1292,7 +1694,7 @@ toString.dagitty <- function( x, format="dagitty", ... ){
 		}, error=function(e){
 			stop( e )
 		},finally={.deleteJSVar(xv)})
-	} else if( format %in% c("lavaan","tikz") ){
+	} else if( format %in% c("lavaan","tikz","bnlearn","singular") ){
 		xv <- .getJSVar()
 		tryCatch({
 			.jsassign( xv, as.character(x) )
@@ -1316,7 +1718,7 @@ toString.dagitty <- function( x, format="dagitty", ... ){
 #' variable (see \code{\link{graphLayout}}) 
 #' @details
 #' The textual syntax for DAGitty graph is based on the dot language of the 
-#' graphviz software (\url{http://www.graphviz.org/content/dot-language}). This is a
+#' graphviz software (\url{https://graphviz.gitlab.io/_pages/doc/info/lang.html}). This is a
 #' fairly intuitive syntax -- use the examples below and in the other functions to
 #' get you started. An important difference to graphviz is that the DAGitty language
 #' supports several types of graphs, which have different semantics. However, many users
@@ -1482,12 +1884,16 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #' Derives testable implications from the given graphical model and tests them against
 #' the given dataset.
 #'
-#' @param x the input graph, a DAG, MAG, or PDAG.
-#' @param tests optional list of the precise tests to perform. If not given, the list
+#' @param x the input graph, a DAG, MAG, or PDAG. Either an input graph or an explicit
+#'  list of tests needs to be specified.
+#' @param tests list of the precise tests to perform. If not given, the list
 #'  of tests is automatically derived from the input graph. Can be used to restrict 
 #'  testing to only a certain subset of tests (for instance, to test only those conditional
 #'  independencies for which the conditioning set is of a reasonably low dimension, such
 #'  as shown in the example). 
+#' @param X vector of variable names.
+#' @param Y vector of variable names.
+#' @param Z vector of variable names.
 #' @param data matrix or data frame containing the data.
 #' @param sample.cov the sample covariance matrix; ignored if \code{data} is supplied.
 #' Either \code{data} or \code{sample.cov} and \code{sample.nobs} must be supplied.
@@ -1495,6 +1901,7 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #' @param type character indicating which kind of local
 #'  test to perform. Supported values are \code{"cis"} (linear conditional independence),
 #'  \code{"cis.loess"} (conditional independence using loess regression), 
+#'  \code{"cis.chisq"} (for categorical data, based on the chi-square test),
 #'  \code{"tetrads"} and \code{"tetrads.type"}, where "type" is one of the items of the 
 #'  tetrad typology, e.g. \code{"tetrads.within"} (see \code{\link{vanishingTetrads}}).
 #'  Tetrad testing is only implemented for DAGs.
@@ -1502,10 +1909,21 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #'   intervals. If \code{NULL}, then confidence intervals are based on normal
 #'   approximation. For tetrads, the normal approximation is only valid in 
 #'   large samples even if the data are normally distributed.
+#' @param tol bound value for tolerated deviation from local test value. By default, we perform
+#'    a two-sided test of the hypothesis theta=0. If this parameter is given, the test changes
+#'    to abs(theta)=tol versus abs(theta)>tol.
+#' @param max.conditioning.variables for conditional independence testing, this 
+#'    parameter can be used to perform only those tests where the number of conditioning
+#'   variables does not exceed the given value. High-dimensional
+#'   conditional independence tests can be very unreliable.
 #' @param conf.level determines the size of confidence intervals for test
 #'   statistics.
+#' @param ... parameters passed on from \code{ciTest} to \code{localTests}
 #' @param loess.pars list of parameter to be passed on to  \code{\link[stats]{loess}}
 #'   (for \code{type="cis.loess"}), for example the smoothing range.
+#'
+#' \code{ciTest(X,Y,Z,data)} is a convenience function to test a single conditional independence
+#' independently of a DAG.
 #'
 #' @details Tetrad implications can only be derived if a Gaussian model (i.e., a linear
 #' structural equation model) is postulated. Conditional independence implications (CI)
@@ -1523,28 +1941,43 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #' d <- simulateSEM("dag{X->{U1 M2}->Y U1->M1}",.6,.6)
 #' 
 #' # Postulate and test full mediation model without measurement error
-#' plotLocalTestResults(localTests( "dag{ X -> {M1 M2} -> Y }", d, "cis" ))
+#' r <- localTests( "dag{ X -> {M1 M2} -> Y }", d, "cis" )
+#' plotLocalTestResults( r )
 #'
 #' # Simulate data from example SEM
 #' g <- getExample("Polzer")
 #' d <- simulateSEM(g,.1,.1)
 #' 
 #' # Compute independencies with at most 3 conditioning variables
-#' imp <- Filter(function(x) length(x$Z)<4, impliedConditionalIndependencies(g))
-#' plotLocalTestResults(localTests( g, d, "cis.loess", R=100, tests=imp, loess.pars=list(span=0.6) ))
+#' r <- localTests( g, d, "cis.loess", R=100, loess.pars=list(span=0.6),
+#'         max.conditioning.variables=3 )
+#' plotLocalTestResults( r )
+#'
+#' # Test independencies for categorical data using chi-square test
+#' d <- simulateLogistic("dag{X->{U1 M2}->Y U1->M1}",2)
+#' localTests( "dag{X->{M1 M2}->Y}", d, type="cis.chisq" )
 #'
 #' @export
-localTests <- function(x, data=NULL, 
-	type=c("cis","cis.loess","tetrads","tetrads.within","tetrads.between","tetrads.epistemic"),
+localTests <- function(x=NULL, data=NULL, 
+	type=c("cis","cis.loess","cis.chisq",
+	       "tetrads","tetrads.within","tetrads.between","tetrads.epistemic"),
 	tests=NULL,
 	sample.cov=NULL,sample.nobs=NULL,
-	conf.level=.95,R=NULL,loess.pars=NULL){
-	x <- as.dagitty(x)
+	conf.level=.95,R=NULL,
+	max.conditioning.variables=NULL,
+	tol=NULL,
+	loess.pars=NULL){
 	type <- match.arg(type)
-	if( type=="cis" ){
-		.supportsTypes(x,c("dag","pdag","mag"))
-	} else {
-		.supportsTypes(x,c("dag"))
+	if( !is.null(x) ){
+		x <- as.dagitty(x)
+		if( type=="cis" ){
+			.supportsTypes(x,c("dag","pdag","mag"))
+		} else {
+			.supportsTypes(x,c("dag"))
+		}
+	}
+	if( is.null(x) && is.null(tests) ){
+		stop("Please provide either an input graph or a list of tests")
 	}
 	if( !is.null(sample.cov) && is.null(sample.nobs) ){
 		stop("Please provide sample size (sample.nobs)!")
@@ -1553,29 +1986,42 @@ localTests <- function(x, data=NULL,
 		stop("Bootstrapping requires raw data!")
 	}
 	if( is.null(R) && type=="cis.loess" ){
-		stop("Non-parametric conditional independence testing requires bootstrapping! Please provide R argument.")
+		stop(paste("Semi-parametric conditional independence testing",
+			  "requires bootstrapping! Please use the argument R"))
+	}
+	if( type=="cis.chisq" && !is.null(tol) ){
+		stop("Tolerance levels not implemented yet for categorical data!")
 	}
 	if( is.null(data) && is.null(sample.cov) ){
 		stop("Please provide either data or sample covariance matrix!")
 	}
-	w <- (1-conf.level)/2
-	if( type %in% c("tetrads","tetrads.within","tetrads.between","tetrads.epistemic") ){
+	if( !is.null(tol) && !is.null(R) ){
+		stop("Bootstrap only computes confidence intervals, so tol parameter cannot be used!")
+	}
+	type.split <- strsplit(type,"\\.")[[1]]
+	type.prefix  <- type.split[1]
+	type.postfix <- type.split[2]
+	if( type.prefix == "tetrads" ){
+		# Vanishing tetrad testing
 		if( is.null( tests ) ){
 			if( type == "tetrads" ){
 				tests <- vanishingTetrads( x )
 			} else {
-				tests <- vanishingTetrads( x, strsplit(type,"\\.")[[1]][2] )
+				tests <- vanishingTetrads( x, type.postfix )
 			}
 		}
 		if( length(tests) == 0 ){
 			return(data.frame())
 		}
 		if( is.null( sample.cov ) ){
-			sample.cov <- cov(data)
+			sample.cov <- cor(data)
+		} else {
+			sample.cov <- cov2cor(data)
 		}
 		if( is.null( sample.nobs ) ){
 			sample.nobs <- nrow(data)
 		}
+		w <- (1-conf.level)/2
 		tetrad.values <- .tetradsFromCov(sample.cov,tests)
 		tetrad.sample.sds <- sapply(seq_len(nrow(tests)),
 			function(i) .tetrad.sem(tests[i,],sample.cov,sample.nobs))
@@ -1594,17 +2040,28 @@ localTests <- function(x, data=NULL,
 				paste0(100*w,"%"),paste0(100*(1-w),"%"))
 		} else {
 			std.errors <- tetrad.sample.sds
-			p.values <- 2*pnorm(abs(tetrad.values/tetrad.sample.sds),
-				lower.tail=FALSE)
+			if( is.null(tol) ){
+				p.values <- 2*pnorm(abs(tetrad.values/tetrad.sample.sds),
+					lower.tail=FALSE)
+			} else {
+				tetrad.z <- tetrad.values / tetrad.sample.sds
+				tol.z <- tol / tetrad.sample.sds
+				p.values <- pchisq( tetrad.z^2, 1, ncp=tol.z^2, lower.tail=FALSE )
+			}
 			conf <- cbind( std.errors, p.values, tetrad.values+qnorm(w)*tetrad.sample.sds,
 				tetrad.values+qnorm(1-w)*tetrad.sample.sds )
 			r <- cbind( r, conf )
 			colnames(r) <- c("estimate","std.error","p.value",
 				paste0(100*w,"%"),paste0(100*(1-w),"%"))
 		}
-	} else if( type %in% c("cis","cis.loess") ){
+	} else if( type.prefix == "cis" ){
+		# Conditional independence testing
 		if( is.null(tests) ){
 			tests <- impliedConditionalIndependencies( x )
+		}
+		if( !is.null(max.conditioning.variables) ){
+			tests <- Filter(function(x) length(x$Z)<=max.conditioning.variables, 
+					tests)
 		}
 		if( length(tests) == 0 ){
 			return(data.frame())
@@ -1613,34 +2070,44 @@ localTests <- function(x, data=NULL,
 		if( !is.null(R) ){
 			if( type == "cis" ){
 				f <- function(i) .ci.test.lm.perm(data,i,conf.level,R)
-			} else {
+			} else if( type.postfix=="loess" ){
 				f <- function(i) .ci.test.loess.perm(data,i,conf.level,R,loess.pars)
+			} else if( type.postfix=="chisq" ){
+				f <- function(i) .ci.test.chisq.perm(data,i,conf.level,R)
+			} else {
+				stop("Illegal arguments!")
 			}
 			r <- as.data.frame(
 				row.names=row.names,
 				t(sapply( tests, f ))
 			)
-			colnames(r) <- c("estimate","std.error",
-				paste0(100*w,"%"),paste0(100*(1-w),"%"))
 		} else {
-			if( !is.null(data) ){
-				r <- as.data.frame(
-					row.names=row.names,
-					t(sapply( tests, function(i) 
-						.ri.test(data,i,conf.level) ))
-				)
-			} else {
-				r <- as.data.frame(
-					row.names=row.names,
-					t(sapply( tests, function(i) 
-						.ci.test.covmat(sample.cov,sample.nobs,i,conf.level) ))
-				)
+			if( type == "cis" ){
+				f <- function(i) 
+					.ci.test.covmat(sample.cov,sample.nobs,i,conf.level,tol)
+				if( !is.null(data) ){
+					sample.cov <- cov2cor(cov(data))
+					sample.nobs <- nrow(data)
+				}
+			} else if( type.postfix == "chisq" ){
+				f <- function(i) 
+					.ci.test.chisq(data,i,conf.level)
 			}
-			colnames(r) <- c("estimate","std.error","p.value",
-				paste0(100*w,"%"),paste0(100*(1-w),"%"))
+			r <- as.data.frame(
+				row.names=row.names,
+				t(sapply( tests, f ))
+			)
 		}
-	}
+	} 
 	return(r)
+}
+
+#' @rdname localTests
+#' @export
+ciTest <- function(X,Y,Z=NULL,data,...){
+	localTests( data=data, tests=structure(
+		list(structure(list(X=X,Y=Y,Z=Z),class="dagitty.ci")),
+		class="dagitty.cis"), ...)
 }
 
 #' Plot Results of Local Tests
@@ -1659,6 +2126,8 @@ localTests <- function(x, data=NULL,
 #'  the absolute value of the test statistic before plotting.
 #' @param n plot only the n tests for which the absolute value of 
 #'  the test statistics diverges most from 0.
+#' @param auto.margin logical. Computes the left margin to fit the 
+#'  Y axis labels.
 #' @param ... further arguments to be passed on to \code{\link{plot}}.
 #'
 #' @examples
@@ -1669,12 +2138,26 @@ localTests <- function(x, data=NULL,
 #' @export
 plotLocalTestResults <- function(x,xlab="test statistic (95% CI)",
 	xlim=range(x[,c(ncol(x)-1,ncol(x))]),sort.by.statistic=TRUE,
-	n=Inf,axis.pars=list(las=1),...){
+	n=Inf,axis.pars=list(las=1), auto.margin=TRUE, ...){
 	x <- x[order(abs(x[1]),decreasing=TRUE),]
 	if( is.finite(n) && n > 0 && n < nrow(x) ){
 		x <- x[1:n,]
 	}
 	y <- seq_len(nrow(x))
+
+	if (auto.margin){
+		oldpar <- graphics::par(no.readonly=TRUE)
+		on.exit(graphics::par(oldpar))
+		lmargin <- max(strwidth(rownames(x), "inches")) + 0.2
+		if ( lmargin > (par("fin")[1] / 2) ){
+			lmargin = par("fin")[1] / 2
+			warning("Warning: Plotting area too narrow to fit the Y axis labels.")
+		}
+		newmar <- oldpar$mai
+		newmar[2] <- lmargin
+		par(mai=newmar)
+	}
+
 	plot( x[,1], y,xlab=xlab,xlim=xlim, yaxt="n", ylab="", ... )
 	do.call( axis, c( list( 2, at=y, labels=rownames(x)), axis.pars ) )
 	segments( x[,ncol(x)-1], y, x[,ncol(x)], y )
@@ -1707,6 +2190,7 @@ plotLocalTestResults <- function(x,xlab="test statistic (95% CI)",
 paths <- function(x,from=exposures(x),to=outcomes(x),Z=list(),limit=100,directed=FALSE){
 	x <- as.dagitty(x)
 	.supportsTypes(x,c("dag","mag","pdag"))
+	.checkAllNames( x, c(from,to,Z) )
 	xv <- .getJSVar()
 	xv2 <- .getJSVar()
 	exposures(x) <- from
@@ -1751,13 +2235,17 @@ paths <- function(x,from=exposures(x),to=outcomes(x),Z=list(),limit=100,directed
 #' @examples
 #' dconnected( "dag{x->m->y}", "x", "y", c() ) # TRUE
 #' dconnected( "dag{x->m->y}", "x", "y", c("m") ) # FALSE
-#' dseparated( "dag{x->m->y}", "x", "y", c() ) # TRUE
-#' dseparated( "dag{x->m->y}", "x", "y", c("m") ) # FALSE
-#' 
+#' dseparated( "dag{x->m->y}", "x", "y", c() ) # FALSE 
+#' dseparated( "dag{x->m->y}", "x", "y", c("m") ) # TRUE
+#'
 #' @export
 dconnected <- function(x,X,Y=list(),Z=list()){
 	x <- as.dagitty(x)
-	.supportsTypes(x,c("dag","pdag","mag"))
+	.supportsTypes(x,c("dag","pdag","mag","pag"))
+	if( length(Z) == 0 ){
+		Z <- list()
+	}
+	.checkAllNames( x, c(X,Y,Z) )
 	xv <- .getJSVar()
 	Xv <- .getJSVar()
 	Yv <- .getJSVar()
@@ -1775,6 +2263,30 @@ dconnected <- function(x,X,Y=list(),Z=list()){
 		.deleteJSVar(Yv)
 		.deleteJSVar(Zv)
 	})
+	r
+}
+
+#' Get Topological Ordering of DAG
+#' 
+#' Computes a topological ordering of the nodes, i.e., a number for each node
+#' such that every node's number is smaller than the one of all its descendants.
+#' Bidirected edges (<->) are ignored.
+#'
+#' @param x the input graph, a DAG
+#'
+#' @export
+topologicalOrdering <- function( x ){
+	x <- as.dagitty( x )
+	.supportsTypes( x, "dag" )
+	xv <- .getJSVar()
+	r <- NULL
+	tryCatch({
+		.jsassigngraph( xv, x )
+		.jsassign( xv, .jsp("GraphAnalyzer.topologicalOrdering(global.",xv,")") )
+		r <- .jsget( xv )
+	}, 
+	error=function(e) stop(e),
+	finally={.deleteJSVar(xv)})
 	r
 }
 
@@ -1818,7 +2330,31 @@ randomDAG <- function( N, p ){
 		.deleteJSVar(xv)
 		.deleteJSVar(pv)
 	})
-	r
+	as.dagitty(r)
+}
+
+#' Generate Complete DAG
+#'
+#' Generates a complete DAG on the given variable names. The order
+#' in which the variables are given corresponds to the topological ordering
+#' of the DAG. Returns a named list.
+#'
+#' @param x variable names. Can also be a positive integer, in which case 
+#' the variables will be called  x1,...,xN.
+#' @export
+completeDAG <- function( x ){
+	if( is.numeric(x) ){
+		x <- paste0("x",seq_len(x))
+	}
+	xv <- .getJSVar()
+	tryCatch({
+	.jsassign( xv, as.list(x) )
+	.jsassign( xv, .jsp("GraphGenerator.randomDAG(",xv,",1).toString()") )
+	r <- .jsget(xv)
+	},finally={
+		.deleteJSVar(xv)
+	})
+	as.dagitty(r)
 }
 
 #' @export
@@ -1838,16 +2374,21 @@ print.dagitty.sets <- function( x, prefix="", ... ){
 		if( length(i) == 0 ){
 			cat( prefix, "{}\n")
 		} else {
-			cat( prefix, "{",paste(i,collapse=", "), "}\n" )
+			l <- paste("{ ",paste(i,collapse=", ")," }\n")
+			writeLines( strwrap( l, exdent=2 ) )
 		}
 	}
 }
 
 #' @export
 as.character.dagitty.ci <- function( x, ... ){
-	r <- paste0( x$X, " _||_ ", paste(x$Y,collapse=", ") )
+	nX <- length(x$X)
+	nY <- length(x$Y)
+	nn <- abbreviate(c(x$X, x$Y, x$Z))
+	r <- paste0( paste(nn[seq_along(x$X)],collapse=", "), " _||_ ", 
+		paste(nn[seq_along(x$Y)+nX],collapse=", ") )
 	if( length( x$Z > 0 ) ){
-		r <- paste0( r, " | ", paste(x$Z,collapse=", ") )
+		r <- paste0( r, " | ", paste(nn[seq_along(x$Z)+nX+nY],collapse=", ") )
 	}
 	r
 }
@@ -1905,3 +2446,27 @@ as.dagitty.default <- function( x, ... ){
 	}
 }
 
+#' @export
+c.dagitty <- function( ... ){
+	args <- list(...)
+	xvs <- replicate( length(args), .getJSVar() )
+	rv <- .getJSVar()
+	tryCatch({
+		for( i in seq_along(args) ){ 
+			.jsassigngraph( xvs[[i]], as.dagitty( args[[i]] ) )
+		}
+		.jsassign( rv, .jsp("GraphTransformer.mergeGraphs(",
+			paste(xvs,collapse=","),").toString()") )
+		r <- .jsget( rv )
+	},finally={
+		lapply( xvs, .deleteJSVar )
+		.deleteJSVar( rv )
+	})
+	as.dagitty(r)
+}
+
+#' @export
+print.dagitty <- function( x, ... ){
+	cat(x)
+	invisible(x)
+}

@@ -4,11 +4,15 @@
 \alias{lavaanToGraph}
 \title{Convert Lavaan Model to DAGitty Graph}
 \usage{
-lavaanToGraph(x, ...)
+lavaanToGraph(x, digits = 3, ...)
 }
 \arguments{
 \item{x}{data frame, lavaan parameter table such as returned by 
-\code{\link[lavaan]{lavaanify}}.}
+\code{\link[lavaan]{lavaanify}}. Can also be a \code{lavaan} object
+or a lavaan model string.}
+
+\item{digits}{number of significant digits to use when representing 
+path coefficients, if any}
 
 \item{...}{Not used.}
 }
@@ -29,7 +33,6 @@ C5 ~ C4
 C1 ~~ C2 \\n C1 ~~ C3 \\n C1 ~~ C4 \\n C1 ~~ C5
 C2 ~~ C3 \\n C2 ~~ C4 \\n C2 ~~ C5
 C3 ~~ C4 \\n C3 ~~ C5",fixed.x=FALSE)
-plot( graphLayout( lavaanToGraph( mdl ) ) )
+plot( lavaanToGraph( mdl ) )
 }
 }
-

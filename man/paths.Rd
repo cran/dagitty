@@ -4,8 +4,8 @@
 \alias{paths}
 \title{Show Paths}
 \usage{
-paths(x, from = exposures(x), to = outcomes(x), Z = list(), limit = 100,
-  directed = FALSE)
+paths(x, from = exposures(x), to = outcomes(x), Z = list(),
+  limit = 100, directed = FALSE)
 }
 \arguments{
 \item{x}{the input graph, a DAG, PDAG, or MAG.}
@@ -33,4 +33,3 @@ or closed (d-separated).
 sum( paths(backDoorGraph(getExample("Shrier")))$open ) # Any open Back-Door paths?
 
 }
-

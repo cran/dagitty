@@ -59,6 +59,16 @@ var DagittyR = {
 		return r
 	},
 
+	vertexAttributes2r : function( g, a ){
+		'use strict'
+		var r = { v : [], a : [] }
+		_.each(g.vertices.values(), function( v ){
+			r.v.push( v.id )
+			r.a.push( v.attributes ? v.attributes[a] : null )
+		} )
+		return r
+	},
+
 	edge2r : function( g ){
 		'use strict'
 		var r = { v : [], w : [], e : [], x : [], y : [] }
@@ -113,7 +123,11 @@ var DagittyR = {
 		'use strict'
 		for( var i = 0 ; i < examples.length ; i++ ){
 			if( examples[i].l.toLowerCase().indexOf(s.toLowerCase()) >= 0 ){
-				return GraphParser.parseGuess(examples[i].e,examples[i].v).toString()
+				if( examples[i].d ){
+					return GraphParser.parseGuess(examples[i].d).toString()
+				} else {
+					return GraphParser.parseGuess(examples[i].e,examples[i].v).toString()
+				}
 			}
 		}
 	}

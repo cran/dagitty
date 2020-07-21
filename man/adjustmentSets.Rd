@@ -4,8 +4,10 @@
 \alias{adjustmentSets}
 \title{Covariate Adjustment Sets}
 \usage{
-adjustmentSets(x, exposure = NULL, outcome = NULL, type = c("minimal",
-  "canonical", "all"), effect = c("total", "direct"))
+adjustmentSets(x, exposure = NULL, outcome = NULL,
+  type = c("minimal", "canonical", "all"), effect = c("total", "direct"),
+  max.results = Inf
+)
 }
 \arguments{
 \item{x}{the input graph, a DAG, MAG, PDAG, or PAG.}
@@ -31,6 +33,10 @@ an extension of Pearl's back-door criterion, is used. Otherwise, if
 \code{effect="direct"}, then the average direct effect is to be identified, and Pearl's
 single-door criterion is used (Pearl, 2009). In a structural equation model (Gaussian
 graphical model), direct effects are simply the path coefficients.}
+
+\item{max.results}{integer. The listing of adjustment set is stopped once
+this many results have been found. Use \code{Inf} to generate them all. 
+This only applys when \code{type="minimal"}.}
 }
 \description{
 Enumerates sets of covariates that (asymptotically) allow unbiased estimation of causal
@@ -67,4 +73,3 @@ E. Perkovic, J. Textor, M. Kalisch and M. H. Maathuis (2015), A
 Complete Generalized Adjustment Criterion. In \emph{Proceedings of UAI
 2015.}
 }
-

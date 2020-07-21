@@ -4,10 +4,16 @@
 \alias{plot.dagitty}
 \title{Plot Graph}
 \usage{
-\method{plot}{dagitty}(x, ...)
+\method{plot}{dagitty}(x, abbreviate.names = FALSE,
+  show.coefficients = FALSE, ...)
 }
 \arguments{
 \item{x}{the input graph, a DAG, MAG, or PDAG.}
+
+\item{abbreviate.names}{logical. Whether to abbreviate variable names.}
+
+\item{show.coefficients}{logical. Whether to plot coefficients defined in the graph syntax
+on the edges.}
 
 \item{...}{not used.}
 }
@@ -16,4 +22,3 @@ A simple plot method to quickly visualize a graph. This is intended mainly for
 simple visualization purposes and not as a full-fledged graph drawing
 function.
 }
-

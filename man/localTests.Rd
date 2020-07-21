@@ -2,26 +2,32 @@
 % Please edit documentation in R/dagitty.r
 \name{localTests}
 \alias{localTests}
+\alias{ciTest}
 \title{Test Graph against Data}
 \usage{
-localTests(x, data = NULL, type = c("cis", "cis.loess", "tetrads",
-  "tetrads.within", "tetrads.between", "tetrads.epistemic"), tests = NULL,
-  sample.cov = NULL, sample.nobs = NULL, conf.level = 0.95, R = NULL,
-  loess.pars = NULL)
+localTests(x = NULL, data = NULL, type = c("cis", "cis.loess",
+  "cis.chisq", "tetrads", "tetrads.within", "tetrads.between",
+  "tetrads.epistemic"), tests = NULL, sample.cov = NULL,
+  sample.nobs = NULL, conf.level = 0.95, R = NULL,
+  max.conditioning.variables = NULL, tol = NULL, loess.pars = NULL)
+
+ciTest(X, Y, Z = NULL, data, ...)
 }
 \arguments{
-\item{x}{the input graph, a DAG, MAG, or PDAG.}
+\item{x}{the input graph, a DAG, MAG, or PDAG. Either an input graph or an explicit
+list of tests needs to be specified.}
 
 \item{data}{matrix or data frame containing the data.}
 
 \item{type}{character indicating which kind of local
 test to perform. Supported values are \code{"cis"} (linear conditional independence),
 \code{"cis.loess"} (conditional independence using loess regression), 
+\code{"cis.chisq"} (for categorical data, based on the chi-square test),
 \code{"tetrads"} and \code{"tetrads.type"}, where "type" is one of the items of the 
 tetrad typology, e.g. \code{"tetrads.within"} (see \code{\link{vanishingTetrads}}).
 Tetrad testing is only implemented for DAGs.}
 
-\item{tests}{optional list of the precise tests to perform. If not given, the list
+\item{tests}{list of the precise tests to perform. If not given, the list
 of tests is automatically derived from the input graph. Can be used to restrict 
 testing to only a certain subset of tests (for instance, to test only those conditional
 independencies for which the conditioning set is of a reasonably low dimension, such
@@ -40,8 +46,28 @@ intervals. If \code{NULL}, then confidence intervals are based on normal
 approximation. For tetrads, the normal approximation is only valid in 
 large samples even if the data are normally distributed.}
 
+\item{max.conditioning.variables}{for conditional independence testing, this 
+ parameter can be used to perform only those tests where the number of conditioning
+variables does not exceed the given value. High-dimensional
+conditional independence tests can be very unreliable.}
+
+\item{tol}{bound value for tolerated deviation from local test value. By default, we perform
+a two-sided test of the hypothesis theta=0. If this parameter is given, the test changes
+to abs(theta)=tol versus abs(theta)>tol.}
+
 \item{loess.pars}{list of parameter to be passed on to  \code{\link[stats]{loess}}
-(for \code{type="cis.loess"}), for example the smoothing range.}
+  (for \code{type="cis.loess"}), for example the smoothing range.
+
+\code{ciTest(X,Y,Z,data)} is a convenience function to test a single conditional independence
+independently of a DAG.}
+
+\item{X}{vector of variable names.}
+
+\item{Y}{vector of variable names.}
+
+\item{Z}{vector of variable names.}
+
+\item{...}{parameters passed on from \code{ciTest} to \code{localTests}}
 }
 \description{
 Derives testable implications from the given graphical model and tests them against
@@ -64,15 +90,20 @@ set.seed(123)
 d <- simulateSEM("dag{X->{U1 M2}->Y U1->M1}",.6,.6)
 
 # Postulate and test full mediation model without measurement error
-plotLocalTestResults(localTests( "dag{ X -> {M1 M2} -> Y }", d, "cis" ))
+r <- localTests( "dag{ X -> {M1 M2} -> Y }", d, "cis" )
+plotLocalTestResults( r )
 
 # Simulate data from example SEM
 g <- getExample("Polzer")
 d <- simulateSEM(g,.1,.1)
 
 # Compute independencies with at most 3 conditioning variables
-imp <- Filter(function(x) length(x$Z)<4, impliedConditionalIndependencies(g))
-plotLocalTestResults(localTests( g, d, "cis.loess", R=100, tests=imp, loess.pars=list(span=0.6) ))
+r <- localTests( g, d, "cis.loess", R=100, loess.pars=list(span=0.6),
+        max.conditioning.variables=3 )
+plotLocalTestResults( r )
+
+# Test independencies for categorical data using chi-square test
+d <- simulateLogistic("dag{X->{U1 M2}->Y U1->M1}",2)
+localTests( "dag{X->{M1 M2}->Y}", d, type="cis.chisq" )
 
 }
-
