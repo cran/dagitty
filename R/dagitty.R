@@ -3,8 +3,8 @@
 #' @importFrom MASS ginv
 #' @importFrom grDevices dev.size
 #' @importFrom methods is
-#' @importFrom utils tail combn
-#' @importFrom stats as.formula coef confint cov cov2cor cor lm pnorm pchisq qnorm quantile runif loess sd weighted.mean complete.cases rbinom
+#' @importFrom utils tail combn capture.output
+#' @importFrom stats as.formula coef confint cov cov2cor cor lm pnorm pchisq qnorm quantile runif loess sd weighted.mean complete.cases rbinom cancor cor.test
 #' @importFrom graphics abline arrows axis lines par plot plot.new segments strheight strwidth text xspline
 NULL
 
@@ -49,7 +49,7 @@ graphType <- function( x ){
 #' Provides access to the builtin examples of the dagitty website.
 #'
 #' @param x name of the example, or part thereof. Supported values are:
-#' \itemize{
+#' \describe{
 #'  \item{"M-bias"}{ the M-bias graph.}
 #'  \item{"confounding"}{ an extended confounding triangle.}
 #'  \item{"mediator"}{ a small model with a mediator.}
@@ -106,238 +106,7 @@ getExample <- function( x ){
 	}
 }
 
-#' Simulate Data from Structural Equation Model
-#'
-#' Interprets the input graph as a structural equation model, generates random path 
-#' coefficients, and simulates data from the model. This is a very bare-bones 
-#' function and probably not very useful 
-#' except for quick validation purposes (e.g. checking that an implied vanishing 
-#' tetrad truly vanishes in simulated data). For more elaborate simulation studies, please
-#' use the lavaan package or similar facilities in other packages.
-#'
-#' @param x the input graph, a DAG (which may contain bidirected edges).
-#' @param N number of samples to generate.
-#' @param b.lower lower bound for random path coefficients, applied if \code{b.default=NULL}.
-#' @param b.upper upper bound for path coefficients.
-#' @param b.default default path coefficient applied to arrows for which no coefficient is 
-#'  defined in the model syntax.
-#' @param eps residual variance (only meaningful if \code{standardized=FALSE}).
-#' @param empirical logical. If true, the empirical covariance matrix will be equal to the
-#'  population covariance matrix.
-#' @param standardized logical. If true, a standardized population covariance matrix
-#'   is generated (all variables have variance 1).
-#' @param verbose logical. If true, prints the generated population covariance matrix.
-#' 
-#' @return Returns a data frame containing \code{N} values for each variable in \code{x}.
-#'
-#' @details Data are generated in the following manner. 
-#' Each directed arrow is assigned a path coefficient that can be given using the attribute
-#' "beta" in the model syntax (see the examples). All coefficients not set in this manner are
-#' set to the \code{b.default} argument, or if that is not given, are chosen uniformly
-#' at random from the interval given by \code{b.lower} and \code{b.upper} (inclusive; set
-#' both parameters to the same value for constant path coefficients). Each bidirected 
-#' arrow a <-> b is replaced by a substructure  a <- L -> b, where L is an exogenous latent
-#' variable. Path coefficients on such substructures are set to \code{sqrt(x)}, where 
-#' \code{x} is again chosen at random from the given interval; if \code{x} is negative,
-#' one path coefficient is set to \code{-sqrt(x)} and the other to \code{sqrt(x)}. All
-#' residual variances are set to \code{eps}.
-#'
-#' If \code{standardized=TRUE}, all path coefficients are interpreted as standardized coefficients.
-#' But not all standardized coefficients are compatible with all graph structures.
-#' For instance, the graph structure z <- x -> y -> z is incompatible with standardized
-#' coefficients of 0.9, since this would imply that the variance of z must be larger than
-#' 1. For large graphs with many parallel paths, it can be very difficult to find coefficients 
-#' that work.
-#' 
-#' 
-#' @examples
-#' ## Simulate data with pre-defined path coefficients of -.6
-#' g <- dagitty('dag{z -> x [beta=-.6] x <- y [beta=-.6] }')
-#' x <- simulateSEM( g ) 
-#' cov(x)
-#'
-#' 
-#' @export
-simulateSEM <- function( x, b.default=NULL, b.lower=-.6, b.upper=.6, eps=1, N=500, standardized=TRUE,
-	empirical=FALSE, verbose=FALSE ){
-	if( !requireNamespace( "MASS", quietly=TRUE ) ){
-		stop("This function requires the 'MASS' package!")
-	}
-	.supportsTypes( x, c("dag") )
-	x <- as.dagitty( x )
-	e <- .edgeAttributes( x, "beta" )
 
-	e$a <- as.double(as.character(e$a))
-	b.not.set <- is.na(e$a)
-	if( is.null( b.default ) ){
-		e$a[b.not.set] <- runif(sum(b.not.set),b.lower,b.upper)
-	} else {
-		e$a[b.not.set] <- b.default
-	}
-
-	v <- .vertexAttributes( x, "eps" )
-	v$a <- as.double(as.character(v$a))
-	v.not.set <- is.na(v$a)
-	v$a[v.not.set] <- eps
-
-	ovars <- names(x)
-	lats <- c()
-	nV <- length(ovars)
-	nL <- sum(e$e=="<->")
-	if( nrow(e) > 0 ){
-		vars <- paste0("v",ovars)
-		if( nL > 0 ){
-			lats <- paste0("l",seq_len(nL))
-		} else {
-			lats <- c()
-		}
-		Beta <- matrix( 0, nrow=nV+nL, ncol=nV+nL )
-		rownames(Beta) <- colnames(Beta) <- c(vars,lats)
-		cL <- 1
-		for( i in seq_len( nrow(e) ) ){
-			b <- e$a[i]
-			if( e$e[i] == "<->" ){
-				lV <- paste0("l",cL) 
-				lb <- sqrt(abs(b))
-				Beta[lV,paste0("v",e$v[i])] <- lb
-				if( b < 0 ){
-					Beta[lV,paste0("v",e$w[i])] <- -lb
-				} else {
-					Beta[lV,paste0("v",e$w[i])] <- lb
-				}
-				cL <- cL + 1
-			} else if( e$e[i] == "->" ){
-				Beta[paste0("v",e$v[i]),paste0("v",e$w[i])] <- b
-			}
-		}
-		L <- (diag( 1, nV+nL ) - Beta)
-		Li <- MASS::ginv( L )
-		if( standardized == TRUE ){
-			Phi <- MASS::ginv( t(Li)^2 ) %*% rep(eps,nrow(Beta))
-			Phi <- diag( c(Phi), nV+nL )
-		} else {
-			veps <- rep( eps, nV+nL )
-			veps[1:nV] <- v$a[match(ovars,v$v)]
-			Phi <- diag( veps, nV+nL )
-		}
-		Sigma <- t(Li) %*% Phi %*% Li
-	} else {
-		if( standardized == TRUE ){
-			Sigma <- diag(eps,nV+nL)
-		} else {
-			veps <- rep( eps, nV+nL )
-			veps[1:nV] <- v$a[match(ovars,v$v)]
-			Sigma <- diag( veps, nV+nL )
-		}
-	}
-	if( verbose ){
-		SigmaC <- Sigma
-		colnames( SigmaC ) <- rownames( SigmaC ) <- c(ovars,lats)
-		print( veps )
-		print( SigmaC )
-	}
-	r <- MASS::mvrnorm( N, rep(0,nV+nL), Sigma, empirical=empirical )[,1:nV,drop=FALSE]
-	colnames(r) <- ovars
-	r <- as.data.frame(r)
-	r[,setdiff(ovars,latents(x)),drop=FALSE]
-}
-
-#' Simulate Binary Data from DAG Structure
-#'
-#' Interprets input DAG as a structural description of a logistic
-#' model in which each variable is binary and its log-odds ratio is 
-#' a linear combination of its parent values.
-#'
-#' @param x the input graph, a DAG (which may contain bidirected edges).
-#' @param N number of samples to generate.
-#' @param b.lower lower bound for random path coefficients, applied if \code{b.default=NULL}.
-#' @param b.upper upper bound for path coefficients.
-#' @param b.default default path coefficient applied to arrows for which no coefficient is 
-#'  defined in the model syntax.
-#' @param eps base log-odds ratio.
-#' @param verbose logical. If true, prints the order in which the data are generated (which
-#'  should be a topological order).
-#' 
-#' @export
-simulateLogistic <- function( x, b.default=NULL, 
-	b.lower=-.6, b.upper=.6, eps=0, N=500,
-	verbose=FALSE ){
-	.supportsTypes( x, c("dag") )
-	x <- as.dagitty( x )
-	e <- .edgeAttributes( x, "beta" )
-	e$a <- as.double(as.character(e$a))
-	b.not.set <- is.na(e$a)
-	if( is.null( b.default ) ){
-		e$a[b.not.set] <- runif(sum(b.not.set),b.lower,b.upper)
-	} else {
-		e$a[b.not.set] <- b.default
-	}
-	ovars <- names(x)
-	nV <- length(ovars)
-	nL <- sum(e$e=="<->")
-	lats <- c()
-	vars <- paste0("v",ovars)
-	if( nrow(e) > 0 ){
-		if( nL > 0 ){
-			lats <- paste0("l",seq_len(nL))
-		}
-		Beta <- matrix( 0, nrow=nV+nL, ncol=nV+nL )
-		rownames(Beta) <- colnames(Beta) <- c(vars,lats)
-		cL <- 1
-		for( i in seq_len( nrow(e) ) ){
-			b <- e$a[i]
-			if( e$e[i] == "<->" ){
-				lV <- paste0("l",cL) 
-				lb <- sqrt(abs(b))
-				Beta[lV,paste0("v",e$v[i])] <- lb
-				if( b < 0 ){
-					Beta[lV,paste0("v",e$w[i])] <- -lb
-				} else {
-					Beta[lV,paste0("v",e$w[i])] <- lb
-				}
-				cL <- cL + 1
-			} else if( e$e[i] == "->" ){
-				Beta[paste0("v",e$v[i]),paste0("v",e$w[i])] <- b
-			}
-		}
-	} else {
-		Beta <- diag(1,nV)
-		colnames(Beta) <- vars
-	}
-	if( verbose ){
-		print(Beta)
-	}
-	rootNodes <- which( Beta != 0 )
-	r <- matrix( 0, ncol=ncol(Beta), nrow=N )
-	colnames(r) <- colnames(Beta)
-	roots <- !(colnames(Beta) %in% paste0("v",unique(e$w)))
-
-	for( i in colnames(Beta)[roots] ){
-		if( verbose ){
-			print(paste("Generating",i))
-		}
-		r[,i] <- 2*rbinom( N, 1, .odds2p(eps) )-1
-	}
-	tord <- unlist(topologicalOrdering( x )[ovars])
-	if( verbose ){
-		print("topological ordering: ")
-		print(tord)
-	}
-	for( i in which(!roots)[order(tord[!roots])] ){
-		cn <- colnames(Beta)[i]
-		if( verbose ){
-			print(paste("Generating",cn))
-		}
-		p <- .odds2p( r %*% Beta[,i] )
-		r[,cn] <- 2*rbinom( N, 1, p )-1
-	}
-	r <- r[,seq(1,nV),drop=FALSE]
-	colnames(r) <- ovars
-	r <- as.data.frame(r)
-	r <- r[,setdiff(ovars,latents(x)),drop=FALSE]
-	r[] <- lapply(r,function(x) factor(x,levels=c(-1,1)))
-	r
-}
 
 #' Implied Covariance Matrix of a Gaussian Graphical Model
 #'
@@ -411,6 +180,9 @@ impliedCovarianceMatrix <- function( x, b.default=NULL, b.lower=-.6, b.upper=.6,
 #'
 #' @param x the input graph, of any type.
 #' @param v name(s) of variable(s).
+#' @param proper logical. By default (\code{proper=FALSE}), the \code{descendants} or \code{ancestors}
+#' of a variable include the variable itself. For (\code{proper=TRUE}), the variable itself 
+#' is not included.
 #'
 #' \code{descendants(x,v)} retrieves variables that are are reachable from \code{v} via 
 #' a directed path.
@@ -435,7 +207,10 @@ impliedCovarianceMatrix <- function( x, b.default=NULL, b.lower=-.6, b.upper=.6,
 #'
 #' @examples
 #' g <- dagitty("graph{ a <-> x -> b ; c -- x <- d }")
+#' # Includes "x"
 #' descendants(g,"x")
+#' # Does not include "x"
+#' descendants(g,"x",TRUE)
 #' parents(g,"x")
 #' spouses(g,"x") 
 #' 
@@ -443,14 +218,24 @@ NULL
 
 #' @rdname AncestralRelations
 #' @export
-descendants <- function( x, v ){
-	.kins( x, v, "descendants" )
+descendants <- function( x, v, proper=FALSE ){
+	r <- .kins( x, v, "descendants" )
+	if( proper ){
+		setdiff( r, v )
+	} else {
+		r
+	}
 }
 
 #' @rdname AncestralRelations
 #' @export
-ancestors <- function( x, v ){
-	.kins( x, v, "ancestors" )
+ancestors <- function( x, v, proper=FALSE ){
+	r <- .kins( x, v, "ancestors" )
+	if( proper ){
+		setdiff( r, v )
+	} else {
+		r
+	}
 }
 
 #' @rdname AncestralRelations
@@ -534,9 +319,9 @@ toMAG <- function( x ){
 #' or a new v-structure (a sugraph a -> m <- b, where a and b are not adjacent).
 #' 
 #' \code{equivalentDAGs(x,n)} enumerates at most \code{n} DAGs that are Markov equivalent
-#' to \code{x}.
+#' to the input DAG or CPDAG \code{x}.
 #'
-#' @param x the input graph, a DAG.
+#' @param x the input graph, a DAG (or CPDAG for \code{equivalentDAGs}).
 #' @param n maximal number of returned graphs.
 #' @name EquivalentModels
 #' @examples
@@ -562,13 +347,13 @@ equivalenceClass <- function( x ){
 #' @export
 equivalentDAGs <- function( x, n=100 ){
 	x <- as.dagitty(x)
-	.supportsTypes( x, "dag" )
+	.supportsTypes( x, c("dag","pdag") )
 	xv <- .getJSVar()
 	r <- NULL
 	tryCatch({
 		.jsassigngraph( xv, x )
-		.jsassign( xv, .jsp("_.map(GraphTransformer.markovEquivalentDags(global.",
-			xv,",",n,"),function(x){return x.toString()})") )
+		.jsassign( xv, .jsp("DAGitty.GraphTransformer.markovEquivalentDags(global.",
+			xv,",",n,").map(function(x){return x.toString()})") )
 		r <- .jsget( xv )
 	}, 
 	error=function(e) stop(e),
@@ -701,7 +486,7 @@ ancestorGraph <- function( x, v=NULL ){
 		.jsassigngraph( xv, x )
 		.jsassign( xv2, v )
 		.jsassign( xv2, .jsp("DagittyR.getVertices(global.",xv,",global.",xv2,")") )
-		.jsassign( xv, .jsp("GraphTransformer.ancestorGraph(global.",xv,",global.",xv2,")") )
+		.jsassign( xv, .jsp("DAGitty.GraphTransformer.ancestorGraph(global.",xv,",global.",xv2,")") )
 		r <- .jsgetgraph( xv )
 	}, 
 	error=function(e) stop(e),
@@ -796,7 +581,7 @@ setVariableStatus <- function( x, status, value ) {
 	vv <- .getJSVar()
 	tryCatch({
 		.jsassign( xv, as.character(x) )
-		.jsassign( xv, .jsp("GraphParser.parseGuess(global.",xv,")") )
+		.jsassign( xv, .jsp("DAGitty.GraphParser.parseGuess(global.",xv,")") )
 		if( status == "exposure" ){
 			jsstatname <- "Source"
 		} else if (status == "outcome" ){
@@ -899,11 +684,11 @@ coordinates <- function( x ){
 	tryCatch({
 		.jsassigngraph( xv, x )
 		.jsassign( xv, .jsp("global.",xv,".getVertices()") )
-		.jsassign( yv, .jsp("_.pluck(global.",xv,",'id')") )
+		.jsassign( yv, .jsp("DagittyR.pluck(global.",xv,",'id')") )
 		labels <- .jsget(yv)
-		.jsassign( yv, .jsp("_.pluck(global.",xv,",'layout_pos_x')") )
+		.jsassign( yv, .jsp("DagittyR.pluck(global.",xv,",'layout_pos_x')") )
 		rx <- .jsget(yv)
-		.jsassign( yv, .jsp("_.pluck(global.",xv,",'layout_pos_y')") )
+		.jsassign( yv, .jsp("DagittyR.pluck(global.",xv,",'layout_pos_y')") )
 		ry <- .jsget(yv)},
 	finally={
 		.deleteJSVar(xv)
@@ -958,11 +743,11 @@ coordinates <- function( x ){
 #' 
 #' @param x the input graph, a DAG or MAG.
 #' @return A list containing the following components:
-#' \itemize{
+#' \describe{
 #'  \item{g}{The resulting graph.}
 #'  \item{L}{Names of newly inserted latent variables.}
 #'  \item{S}{Names of newly inserted selection variables.}
-#' } 
+#' }
 #' 
 #' @examples
 #' canonicalize("mag{x<->y--z}") # introduces two new variables
@@ -975,12 +760,12 @@ canonicalize <- function( x ){
 	r <- NULL
 	tryCatch({
 		.jsassigngraph( xv, x )
-		.jsassign( xv, .jsp("GraphTransformer.canonicalDag(global.",xv,")") )
+		.jsassign( xv, .jsp("DAGitty.GraphTransformer.canonicalDag(global.",xv,")") )
 		.jsassign( xv2, .jsp("global.",xv,".g.toString()") )
 		g <- .jsget( xv2 )
-		.jsassign( xv2, .jsp("_.pluck(",xv,".L,'id')") )
+		.jsassign( xv2, .jsp("DagittyR.pluck(",xv,".L,'id')") )
 		L <- .jsget( xv2 )
-		.jsassign( xv2, .jsp("_.pluck(",xv,".S,'id')") )
+		.jsassign( xv2, .jsp("DagittyR.pluck(",xv,".S,'id')") )
 		S <- .jsget( xv2 )	
 		r <- list( g=structure(g,class="dagitty"), L=L, S=S )
 	}, 
@@ -995,7 +780,7 @@ canonicalize <- function( x ){
 #'
 #' @param x the input graph, of any type.
 #' @return a data frame with the following variables:
-#' \itemize{
+#' \describe{
 #'  \item{v}{ name of the start node.}
 #'  \item{w}{ name of the end node. For symmetric edges (bidirected and undirected), the
 #'  order of start and end node is arbitrary.}
@@ -1011,8 +796,15 @@ canonicalize <- function( x ){
 #' ## Which kinds of edges are used in the Shrier example?
 #' levels( edges( getExample("Shrier") )$e )
 #' @export 
-edges <- function( x ){
-	x <- as.dagitty( x )
+edges <- function( x ) UseMethod("edges")
+
+#' @export
+edges.character <- function( x ){
+	edges( dagitty( x ) )
+}
+
+#' @export
+edges.dagitty <- function( x ){
 	xv <- .getJSVar()
 	tryCatch({
 		.jsassigngraph( xv, x )
@@ -1058,7 +850,7 @@ graphLayout <- function( x, method="spring" ){
 	xv <- .getJSVar()
 	tryCatch({
 		.jsassigngraph( xv, x )
-		.jseval( paste0("(new GraphLayouter.Spring(global.",xv,")).layout()") )
+		.jseval( paste0("(new DAGitty.GraphLayouter.Spring(global.",xv,")).layout()") )
 		.jsassign( xv, .jsp("global.",xv,".toString()") )
 		r <- .jsget(xv)
 	}, finally={.deleteJSVar(xv)})
@@ -1079,14 +871,27 @@ graphLayout <- function( x, method="spring" ){
 #'  the edge labels and the midpoint of the edge can be controlled using this paramer. 
 #'  Can also be a vector of 2 numbers for separate horizontal and vertical adjustment. NA means
 #'  no adjustment (default).
+#' @param node.names If not NULL, a named vector or expression list 
+#'  to rename the nodes.  
 #' @param ... not used.
+#' 
+#' @details If \code{node.names} is not \code{NULL}, it should be a 
+#'  named vector of characters or expressions to use to rename (some of) 
+#'  the nodes, e.g. node \code{"X"} could be renamed using \code{expression(X = alpha^2)}.
+#'
+#' @examples
+#'
+#' # Showing usage of "node.names"
+#' plot(dagitty('{x[pos="0,0"]}->{y[pos="1,0"]}'), node.names=expression(x = alpha^2, y=gamma^2))
+#' 
 #'
 #' @export
 plot.dagitty <- function( x,
 	abbreviate.names=FALSE, 
 	show.coefficients=FALSE,
 	adjust.coefficients=NA,
-	... ){
+	node.names=NULL,
+	... ){	
 	parms <- list(...)	
 	x <- as.dagitty( x )
 	.supportsTypes(x,c("dag","mag","pdag"))
@@ -1101,14 +906,25 @@ plot.dagitty <- function( x,
 	} else {
 		labels <- names(coords$x)
 	}
+	if(!is.null(node.names)){
+	  names(labels) <- names(coords$x)
+	  if(is.null(names(node.names)))
+	    stop("'node.names' must be named")
+	  if(!all(names(node.names) %in% names(labels)))
+	    stop("node(s) not found: ", 
+	         paste0("'", setdiff(names(node.names), names(labels)), "'", 
+	               collapse = ","))
+	  labels[names(node.names)] <- node.names
+	  names(labels) <- names(coords$x) # If coerced to expression, names are lost
+	}
 	omar <- par("mar")
 	par(mar=rep(0,4))
 	plot.new()
 	par(new=TRUE)
-	wx <- sapply( paste0("mm",labels), 
-		function(s) strwidth(s,units="inches") )
-	wy <- sapply( paste0("\n",labels), 
-		function(s) strheight(s,units="inches") )
+	wx <- sapply( labels, 
+	              function(s) strwidth(s,units="inches") ) + strwidth("mm",units="inches")
+	wy <- sapply( labels, 
+	              function(s) strheight(s,units="inches") ) + strheight("\n")
 	ppi.x <- dev.size("in")[1] / (max(coords$x)-min(coords$x))
 	ppi.y <- dev.size("in")[2] / (max(coords$y)-min(coords$y))
 	wx <- wx/ppi.x
@@ -1127,10 +943,8 @@ plot.dagitty <- function( x,
 
 	plot( NA, xlim=xlim, ylim=ylim, xlab="", ylab="", bty="n",
 		xaxt="n", yaxt="n" )
-	wx <- sapply( labels, 
-		function(s) strwidth(paste0("xx",s)) )
-	wy <- sapply( labels,
-		function(s) strheight(paste0("\n",s)) )
+	wx <- sapply( labels, strwidth ) + strwidth("xx") 
+	wy <- sapply( labels, strheight ) + strheight("\n")
 	asp <- par("pin")[1]/diff(par("usr")[1:2]) /
 		(par("pin")[2]/diff(par("usr")[3:4]))
 	ex <- edges(x)
@@ -1299,9 +1113,9 @@ adjustmentSets <- function( x, exposure=NULL, outcome=NULL,
 		tryCatch({
 			.jsassigngraph( xv, x )
 			if( effect=="direct" ){	
-				.jsassign( xv, .jsp("GraphAnalyzer.listMsasDirectEffect(global.",xv,command.close) )
+				.jsassign( xv, .jsp("DAGitty.GraphAnalyzer.listMsasDirectEffect(global.",xv,command.close) )
 			} else {
-				.jsassign( xv, .jsp("GraphAnalyzer.listMsasTotalEffect(global.",xv,command.close) )
+				.jsassign( xv, .jsp("DAGitty.GraphAnalyzer.listMsasTotalEffect(global.",xv,command.close) )
 			}
 			.jsassign( xv, .jsp("DagittyR.adj2r(global.",xv,")"))
 			r <- structure( .jsget(xv), class="dagitty.sets" )
@@ -1386,7 +1200,7 @@ isAdjustmentSet <- function( x, Z, exposure=NULL, outcome=NULL ){
 	tryCatch({
 		.jsassigngraph( xv, x )
 		.jsassign( Zv, as.list(Z) )
-		.jsassign( xv, .jsp("GraphAnalyzer.isAdjustmentSet(",xv,",",Zv,")") )
+		.jsassign( xv, .jsp("DAGitty.GraphAnalyzer.isAdjustmentSet(",xv,",",Zv,")") )
 		r <- .jsget(xv)
 	},finally={
 		.deleteJSVar(xv)
@@ -1397,11 +1211,13 @@ isAdjustmentSet <- function( x, Z, exposure=NULL, outcome=NULL ){
 
 #' Test for Cycles
 #'
-#' Returns \code{TRUE} if the given graph does not contain a directed cycle.
+#' \code{isAcyclic(x)} returns \code{TRUE} if the given graph does not contain a directed cycle.
+#'
+#' \code{findCycle(x)} will try to find at least one cycle in x and return it as a list of node names.
 #'
 #' @param x the input graph, of any graph type.
 #'
-#' @details This function will only consider simple directed edges in the
+#' @details These functions will only consider simple directed edges in the
 #' given graph.
 #'
 #' @examples
@@ -1417,11 +1233,49 @@ isAcyclic <- function( x ){
 	xv <- .getJSVar()
 	tryCatch({
 		.jsassigngraph( xv, x )
-		.jsassign( xv, .jsp("GraphAnalyzer.containsCycle(",xv,")===false") )
+		.jsassign( xv, .jsp("DAGitty.GraphAnalyzer.containsCycle(",xv,")===false") )
 		r <- .jsget(xv)
 	},finally={
 		.deleteJSVar(xv)
 	})
+	r
+}
+
+#' @rdname isAcyclic
+#' @export
+findCycle <- function( x ){
+	x <- as.dagitty( x )
+	xv <- .getJSVar()
+	xv2 <- .getJSVar()
+	xv3 <- .getJSVar()
+	tryCatch({
+		.jsassigngraph( xv, x )
+		vv <- names( x )
+		.jseval( paste0("var cycle = ''; var cc = '';
+				for( ",xv2," of ",xv,".getVertices() ){
+					",xv,".clearVisited();
+					",xv3," = DAGitty.GraphAnalyzer.searchCycleFrom(",xv2,")
+					if( typeof ",xv3," != 'undefined' ){
+						break
+					}
+				}
+				if( typeof ",xv3," == 'undefined' ){
+					",xv," = []
+				} else {
+					",xv," = ",xv3,"
+				}
+			") )
+		r <- .jsget(xv)
+	},finally={
+		.deleteJSVar(xv); .deleteJSVar(xv2); .deleteJSVar(xv3)
+	})
+	if( length(r) > 0 ){
+		for( vi in seq_along(r) ){
+			if( sum( r == r[vi] ) > 1 ){
+				r <- r[vi:length(r)]; break
+			}
+		}
+	}
 	r
 }
 
@@ -1507,19 +1361,19 @@ impliedConditionalIndependencies <- function( x, type="missing.edge", max.result
 	xv <- .getJSVar()
 	tryCatch({
 		.jsassign( xv, as.character(x) )
-		.jsassign( xv, .jsp("GraphParser.parseGuess(global.",xv,")") )
+		.jsassign( xv, .jsp("DAGitty.GraphParser.parseGuess(global.",xv,")") )
 
 		if( type == "missing.edge" ){
 			if( is.finite( max.results ) ){
 				.jsassign( xv,
-					.jsp("GraphAnalyzer.listMinimalImplications(global.",xv,",",
+					.jsp("DAGitty.GraphAnalyzer.listMinimalImplications(global.",xv,",",
 					as.numeric(max.results),")"))
 			} else {
 				.jsassign( xv, 
-					.jsp("GraphAnalyzer.listMinimalImplications(global.",xv,")"))
+					.jsp("DAGitty.GraphAnalyzer.listMinimalImplications(global.",xv,")"))
 			}
 		} else {
-			.jsassign( xv, .jsp("GraphAnalyzer.listBasisImplications(global.",xv,")"))
+			.jsassign( xv, .jsp("DAGitty.GraphAnalyzer.listBasisImplications(global.",xv,")"))
 		}
 		.jsassign( xv, .jsp("DagittyR.imp2r(global.",xv,")") )
 		r  <- structure( lapply( .jsget(xv), 
@@ -1572,7 +1426,7 @@ instrumentalVariables <- function( x, exposure=NULL, outcome=NULL ){
 	xv <- .getJSVar()
 	tryCatch({
 		.jsassigngraph( xv, x )
-		.jsassign( xv, .jsp("GraphAnalyzer.conditionalInstruments(global.",xv,")") )
+		.jsassign( xv, .jsp("DAGitty.GraphAnalyzer.conditionalInstruments(global.",xv,")") )
 		.jsassign( xv, .jsp("DagittyR.iv2r(global.",xv,")") )
 		r <- structure( .jsget(xv), class="dagitty.ivs" )
 	}, finally={.deleteJSVar(xv)})
@@ -1618,10 +1472,10 @@ vanishingTetrads <- function( x, type=NA ){
 	tryCatch({
 		.jsassigngraph( xv, x )
 		if( is.character( type ) ){
-			.jsassign( xv, .jsp("GraphAnalyzer.vanishingTetrads(global.",
+			.jsassign( xv, .jsp("DAGitty.GraphAnalyzer.vanishingTetrads(global.",
 				xv,",undefined,'",type,"')") )
 		} else {
-			.jsassign( xv, .jsp("GraphAnalyzer.vanishingTetrads(global.",
+			.jsassign( xv, .jsp("DAGitty.GraphAnalyzer.vanishingTetrads(global.",
 				xv,")") )
 	
 		}
@@ -1631,103 +1485,6 @@ vanishingTetrads <- function( x, type=NA ){
 	r
 }
 
-
-#' Convert Lavaan Model to DAGitty Graph
-#'
-#' The \code{lavaan} package is a popular package for structural equation 
-#' modeling. To provide interoperability with lavaan, this function 
-#' converts models specified in lavaan syntax to dagitty graphs.
-#'
-#' @param x data frame, lavaan parameter table such as returned by 
-#' \code{\link[lavaan]{lavaanify}}. Can also be a \code{lavaan} object
-#' or a lavaan model string.
-#' @param digits number of significant digits to use when representing 
-#' path coefficients, if any
-#' @param ... Not used.
-#'
-#' @examples
-#' if( require(lavaan) ){
-#' mdl <- lavaanify("
-#' X ~ C1 + C3
-#' M ~ X + C3
-#' Y ~ X + M + C3 + C5
-#' C1 ~ C2
-#' C3 ~ C2 + C4
-#' C5 ~ C4
-#' C1 ~~ C2 \n C1 ~~ C3 \n C1 ~~ C4 \n C1 ~~ C5
-#' C2 ~~ C3 \n C2 ~~ C4 \n C2 ~~ C5
-#' C3 ~~ C4 \n C3 ~~ C5",fixed.x=FALSE)
-#' plot( lavaanToGraph( mdl ) )
-#' }
-#' @export
-lavaanToGraph <- function( x, digits=3, ... ){
-	if( is(x,"lavaan") ){
-		x <- lavaan::parTable(x)
-	} else if( is.character(x) ) {
-		x <- lavaan::lavaanify(lavaan::lavParseModelString(x))
-		x$est <- x$ustart
-	}
-	if( "est" %in% colnames(x) ){
-		bt <- function(i){
-			paste(" [beta=",signif(x$est[i],digits),"]",sep="")
-		}
-	} else {
-		bt <- function(i){ "" }
-	}
-	latents <- c()
-	arrows <- c()
-	for( i in seq_len( nrow(x) ) ){
-		if( x$op[i] == "=~" ){
-			latents <- union(latents,x$lhs[i])
-			arrows <- c(arrows,paste(x$lhs[i]," -> ",x$rhs[i],bt(i)))
-		}
-		if( x$op[i] == "~" ){
-			arrows <- c(arrows,paste(x$lhs[i]," <- ",x$rhs[i],bt(i)))
-		}
-		if( x$op[i] == "~~" && (x$lhs[i] != x$rhs[i]) ){
-			arrows <- c(arrows,paste(x$lhs[i]," <-> ",x$rhs[i],bt(i)))
-		}
-	}
-	if( length(latents) > 0 ){
-		latents <- paste(latents,' [latent]',collapse="\n")
-	} else {
-		latents <- ""
-	}
-	dagitty( paste("dag { ",latents,"\n",
-		paste(arrows,collapse="\n")," } ",collapse="\n") )
-}
-
-#' @export
-toString.dagitty <- function( x, format="dagitty", ... ){
-	x <- as.dagitty( x )
-	format <- match.arg( format, 
-		c("dagitty","tikz","lavaan","dagitty.old","bnlearn","singular") )
-	r <- NULL
-	if( format == "dagitty" ){
-		r <- as.character( x )
-	} else if( format == "dagitty.old" ){
-		xv <- .getJSVar()
-		tryCatch({
-			.jsassigngraph( xv, x )
-			.jsassign( xv, .jsp("global.",xv,".oldToString()") )
-			r <- as.character( .jsget(xv) )
-		}, error=function(e){
-			stop( e )
-		},finally={.deleteJSVar(xv)})
-	} else if( format %in% c("lavaan","tikz","bnlearn","singular") ){
-		xv <- .getJSVar()
-		tryCatch({
-			.jsassign( xv, as.character(x) )
-			.jsassign( xv, .jsp("GraphSerializer.to",
-				toupper(substring(format, 1,1)), substring(format, 2),
-				"(GraphParser.parseGuess(global.",xv,"))") )
-			r <- as.character( .jsget(xv) )
-		}, error=function(e){
-			stop( e )
-		},finally={.deleteJSVar(xv)})
-	}
-	r
-} 
 
 #' Parse DAGitty Graph
 #'
@@ -1866,7 +1623,7 @@ dagitty <- function(x, layout=FALSE){
 	xv <- .getJSVar()
 	tryCatch({
 		.jsassign( xv, as.character(x) )
-		.jsassign( xv, .jsp("GraphParser.parseGuess(global.",xv,").toString()") )
+		.jsassign( xv, .jsp("DAGitty.GraphParser.parseGuess(global.",xv,").toString()") )
 		r <- structure( .jsget(xv), class="dagitty" )
 	}, error=function(e){
 		stop( e )
@@ -1922,6 +1679,7 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #'  test to perform. Supported values are \code{"cis"} (linear conditional independence),
 #'  \code{"cis.loess"} (conditional independence using loess regression), 
 #'  \code{"cis.chisq"} (for categorical data, based on the chi-square test),
+#'  \code{"cis.pillai"} (for mixed data, based on canonical correlations),
 #'  \code{"tetrads"} and \code{"tetrads.type"}, where "type" is one of the items of the 
 #'  tetrad typology, e.g. \code{"tetrads.within"} (see \code{\link{vanishingTetrads}}).
 #'  Tetrad testing is only implemented for DAGs.
@@ -1936,6 +1694,8 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #'    parameter can be used to perform only those tests where the number of conditioning
 #'   variables does not exceed the given value. High-dimensional
 #'   conditional independence tests can be very unreliable.
+#' @param abbreviate.names logical. Whether to abbreviate variable names (these are used as 
+#'   row names in the returned data frame).
 #' @param conf.level determines the size of confidence intervals for test
 #'   statistics.
 #' @param ... parameters passed on from \code{ciTest} to \code{localTests}
@@ -1954,6 +1714,12 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #' (it the raw data is given) is performed.
 #' Both tetrad and CI tests also support bootstrapping instead of estimating parametric
 #' confidence intervals.
+#' For the canonical correlations approach, all ordinal variables are integer-coded, and 
+#' all categorical variables are dummy-coded (omitting the dummy representing the most frequent 
+#' category). To text X _||_ Y | Z, we first regress both X and Y (which now can be multivariate)
+#' on Z, and then we compute the canonical correlations between the residuals. The effect size
+#' is the root mean square canonical correlation (closely related to Pillai's trace, which is the 
+#' root of the squared sum of all canonical correlations).
 #' 
 #' @examples
 #' # Simulate full mediation model with measurement error of M1
@@ -1979,12 +1745,13 @@ downloadGraph <- function(x="dagitty.net/mz-Tuw9"){
 #'
 #' @export
 localTests <- function(x=NULL, data=NULL, 
-	type=c("cis","cis.loess","cis.chisq",
+	type=c("cis","cis.loess","cis.chisq","cis.pillai",
 	       "tetrads","tetrads.within","tetrads.between","tetrads.epistemic"),
 	tests=NULL,
 	sample.cov=NULL,sample.nobs=NULL,
 	conf.level=.95,R=NULL,
 	max.conditioning.variables=NULL,
+	abbreviate.names=TRUE,
 	tol=NULL,
 	loess.pars=NULL){
 	type <- match.arg(type)
@@ -2086,7 +1853,7 @@ localTests <- function(x=NULL, data=NULL,
 		if( length(tests) == 0 ){
 			return(data.frame())
 		}
-		row.names <- sapply(tests,as.character)
+		row.names <- sapply(tests,function(x){ as.character(x,abbreviate.names=abbreviate.names) })
 		if( !is.null(R) ){
 			if( type == "cis" ){
 				f <- function(i) .ci.test.lm.perm(data,i,conf.level,R)
@@ -2112,6 +1879,9 @@ localTests <- function(x=NULL, data=NULL,
 			} else if( type.postfix == "chisq" ){
 				f <- function(i) 
 					.ci.test.chisq(data,i,conf.level)
+			} else if( type.postfix == "pillai" ){
+				f <- function(i)
+					.ci.test.pillai(data,i,conf.level)
 			}
 			r <- as.data.frame(
 				row.names=row.names,
@@ -2125,7 +1895,7 @@ localTests <- function(x=NULL, data=NULL,
 #' @rdname localTests
 #' @export
 ciTest <- function(X,Y,Z=NULL,data,...){
-	localTests( data=data, tests=structure(
+	localTests( data=data[,c(X,Y,Z)], tests=structure(
 		list(structure(list(X=X,Y=Y,Z=Z),class="dagitty.ci")),
 		class="dagitty.cis"), ...)
 }
@@ -2222,7 +1992,7 @@ paths <- function(x,from=exposures(x),to=outcomes(x),Z=list(),limit=100,directed
 	tryCatch({
 		.jsassigngraph( xv, x )
 		.jsassign( xv2, as.list(Z) )
-		.jsassign( xv, .jsp("DagittyR.paths2r(GraphAnalyzer.listPaths(global.",
+		.jsassign( xv, .jsp("DagittyR.paths2r(DAGitty.GraphAnalyzer.listPaths(global.",
 			xv,",",tolower(directed),",",limit,"),",xv2,",",
 			xv,")" ) )
 		r <- .jsget(xv)
@@ -2303,7 +2073,7 @@ topologicalOrdering <- function( x ){
 	r <- NULL
 	tryCatch({
 		.jsassigngraph( xv, x )
-		.jsassign( xv, .jsp("GraphAnalyzer.topologicalOrdering(global.",xv,")") )
+		.jsassign( xv, .jsp("DAGitty.GraphAnalyzer.topologicalOrdering(global.",xv,")") )
 		r <- .jsget( xv )
 	}, 
 	error=function(e) stop(e),
@@ -2345,7 +2115,7 @@ randomDAG <- function( N, p ){
 	tryCatch({
 	.jsassign( pv, p )
 	.jsassign( xv, as.list(paste0("x",seq_len(N))) )
-	.jsassign( xv, .jsp("GraphGenerator.randomDAG(",xv,",",pv,").toString()") )
+	.jsassign( xv, .jsp("DAGitty.GraphGenerator.randomDAG(",xv,",",pv,").toString()") )
 	r <- .jsget(xv)
 	},finally={
 		.deleteJSVar(xv)
@@ -2402,10 +2172,13 @@ print.dagitty.sets <- function( x, prefix="", ... ){
 }
 
 #' @export
-as.character.dagitty.ci <- function( x, ... ){
+as.character.dagitty.ci <- function( x, abbreviate.names=TRUE, ... ){
 	nX <- length(x$X)
 	nY <- length(x$Y)
-	nn <- abbreviate(c(x$X, x$Y, x$Z))
+	nn <- c(x$X, x$Y, x$Z)
+	if( abbreviate.names ){
+		nn <- abbreviate(nn)
+	}
 	r <- paste0( paste(nn[seq_along(x$X)],collapse=", "), " _||_ ", 
 		paste(nn[seq_along(x$Y)+nX],collapse=", ") )
 	if( length( x$Z > 0 ) ){
@@ -2446,48 +2219,3 @@ as.list.dagitty.ivs <- function( x, ... ) structure( x, class="list" )
 #' @export
 `[.dagitty.ivs` <- function(x,y) structure(as.list(x)[y],class="dagitty.ivs")
 
-#' Convert to DAGitty object
-#'
-#' Converts its argument to a DAGitty object, if possible.
-#'
-#' @param x an object.
-#' @param ... further arguments passed on to methods.
-#' @export
-as.dagitty <- function( x, ... ) UseMethod("as.dagitty")
-
-#' @export
-as.dagitty.character <- function( x, ... ) dagitty( x )
-
-#' @export
-as.dagitty.default <- function( x, ... ){
-	if( class(x) == "dagitty" ){
-		x
-	} else {
-		stop("Cannot coerce object to class 'dagitty': ",x)
-	}
-}
-
-#' @export
-c.dagitty <- function( ... ){
-	args <- list(...)
-	xvs <- replicate( length(args), .getJSVar() )
-	rv <- .getJSVar()
-	tryCatch({
-		for( i in seq_along(args) ){ 
-			.jsassigngraph( xvs[[i]], as.dagitty( args[[i]] ) )
-		}
-		.jsassign( rv, .jsp("GraphTransformer.mergeGraphs(",
-			paste(xvs,collapse=","),").toString()") )
-		r <- .jsget( rv )
-	},finally={
-		lapply( xvs, .deleteJSVar )
-		.deleteJSVar( rv )
-	})
-	as.dagitty(r)
-}
-
-#' @export
-print.dagitty <- function( x, ... ){
-	cat(x)
-	invisible(x)
-}

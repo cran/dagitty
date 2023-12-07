@@ -80,13 +80,12 @@
 	if( !exists("ct",.dagitty.cache) ){
 		requireNamespace("V8",quietly=TRUE)
 		ct <- V8::new_context()
-		ct$source(system.file("js/underscore.js",package="V8"))
 		ct$source(system.file("js/dagitty-alg.js",package="dagitty"))
 		ct$source(system.file("js/RUtil.js",package="dagitty"))
 		ct$source(system.file("js/example-dags.js",package="dagitty"))
 
 		# Disabling the shorter syntax until ggdag can deal with it
-		ct$eval("GraphSerializer.SHORTEN_SYNTAX = false")
+		ct$eval("DAGitty.GraphSerializer.SHORTEN_SYNTAX = false")
 
 		assign("ct",ct,.dagitty.cache)
 	}
@@ -144,11 +143,11 @@
 
 .jsassigngraph <- function( xv, x ){
 	.jsassign( xv, as.character(x) )
-	.jsassign( xv, .jsp("GraphParser.parseGuess(global.",xv,")") )
+	.jsassign( xv, .jsp("DAGitty.GraphParser.parseGuess(global.",xv,")") )
 }
 
 .jsgetgraph <- function( xv ){
-	r <- .jsget(paste0("GraphSerializer.toDot(global.",xv,")"))
+	r <- .jsget(paste0("DAGitty.GraphSerializer.toDot(global.",xv,")"))
 	structure(r,class="dagitty")
 }
 
@@ -168,24 +167,27 @@
 	V8::JS( paste0( ... ) )
 }
 
+
 .kins <- function( x, v, type="descendants" ){
 	supported <- c("descendants","ancestors","neighbours","posteriors","anteriors",
 		"children","parents","spouses","adjacentNodes")
 	if( ! type %in% supported ){
 		stop("Supported kinship types : ",paste(supported,collapse=", ") )
 	}
-	.checkName( x, v )
+	if( length(v) == 0 ){
+		return( character(0) )
+	}
+	.checkAllNames( x, v )
 	r <- c()
 	xv <- .getJSVar()
 	vv <- .getJSVar()
 	tryCatch({
 		.jsassigngraph( xv, x )
-		
 		for( w in v ){
 			.jsassign( vv, as.character(w) )
 			.jsassign( vv, .jsp("global.",xv,".getVertex(global.",vv,")") )
 			.jsassign( vv, .jsp("global.",xv,".",type,"Of([global.",vv,"])") )
-			r <- union(r, .jsget( paste0("_.pluck(global.",vv,",'id')") ))
+			r <- union(r, .jsget( paste0("DagittyR.pluck(global.",vv,",'id')") ))
 		}
 	},finally={
 		.deleteJSVar(xv)
@@ -206,9 +208,9 @@
 	xv <- .getJSVar()
 	tryCatch({
 		.jsassign( xv, as.character(x) )
-		.jsassign( xv, .jsp("GraphParser.parseGuess(global.",xv,")") )
+		.jsassign( xv, .jsp("DAGitty.GraphParser.parseGuess(global.",xv,")") )
 		.jsassign( xv, .jsp("global.",xv,".get",.capitalizeFirst(type),"s()") )
-		r <- .jsget( paste0("_.pluck(global.",xv,",'id')") )
+		r <- .jsget( paste0("DagittyR.pluck(global.",xv,",'id')") )
 	},finally={
 		.deleteJSVar(xv)
 	})
@@ -267,7 +269,7 @@
 	r <- NULL
 	tryCatch({
 		.jsassigngraph( xv, x )
-		.jsassign( xv, .jsp("GraphTransformer.",method,"(global.",xv,")") )
+		.jsassign( xv, .jsp("DAGitty.GraphTransformer.",method,"(global.",xv,")") )
 		.jsassign( xv, .jsp("global.",xv,".toString()") )
 		r <- .jsget( xv )
 	}, 
@@ -277,8 +279,16 @@
 }
 
 .checkName <- function(x, v) {
-  if (!(v %in% names(x))) 
-    stop(paste(v, "is not a variable in `x`"))
+	# allow "no" names for convenience
+	if( length(v) == 0 ){
+		return()
+	}
+	if( length(v) > 1 ){
+		stop("This function expects a variable name")
+	}
+  	if (!(v %in% names(x))){
+    	stop(paste(v, "is not a variable in `x`"))
+	}
 }
 
 .checkAllNames <- function(x, vv) {
